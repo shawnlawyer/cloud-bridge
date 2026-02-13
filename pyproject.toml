@@ -9,6 +9,15 @@ description = "Deterministic federated coordination substrate (Instrument + Subs
 readme = "README.md"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+]
+
+[project.scripts]
+cloud-bridge = "bridge.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bridge*"]

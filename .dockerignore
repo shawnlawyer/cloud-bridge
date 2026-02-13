@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+Cloud Bridge Reconstruction - next.pdf
+SPEC.md
+SPEC.clean.md

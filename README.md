@@ -51,5 +51,83 @@ python examples/federation_demo.py
 python -m unittest
 ```
 
+**Runtime**
+- `HTTP`: stateless request/response service
+- `CLI`: local deterministic wrapper
+- `No background daemon`: no scheduler, no hidden loop lifecycle
+
+**HTTP Service**
+Install API extras:
+```bash
+pip install -e ".[api]"
+```
+
+Run:
+```bash
+uvicorn bridge.api.app:app --host 0.0.0.0 --port 8080
+```
+
+Endpoints:
+- `POST /route`
+- `POST /federate`
+- `GET /metrics`
+- `GET /health`
+
+**Docker**
+Build:
+```bash
+docker build -t cloud-bridge:0.1.2 .
+```
+
+Run:
+```bash
+docker run --rm -p 8080:8080 cloud-bridge:0.1.2
+```
+
+Health check:
+```bash
+curl http://localhost:8080/health
+```
+
+Example `POST /route` body:
+```json
+{
+  "envelope": {
+    "gtid": "cb:1:bridge-1:thread-1",
+    "schema_version": "1.0",
+    "from_agent": "agent-a",
+    "to_agent": "agent-b",
+    "payload": {"task": "summarize"}
+  },
+  "registry": {
+    "agent-b": "bridge-2"
+  }
+}
+```
+
+Route test:
+```bash
+curl -X POST http://localhost:8080/route \
+  -H "Content-Type: application/json" \
+  -d '{"envelope":{"gtid":"cb:1:local:test","schema_version":"1.0","from_agent":"a","to_agent":"b","payload":{}},"registry":{"b":"bridge-1"}}'
+```
+
+Example `POST /federate` body:
+```json
+{
+  "local_id": "bridge-1",
+  "remote_id": "bridge-2",
+  "known_bridges": ["bridge-3"]
+}
+```
+
+**CLI**
+```bash
+cloud-bridge route < input.json
+cloud-bridge federate < input.json
+cloud-bridge metrics
+cloud-bridge health
+```
+
 **License**
 MIT
