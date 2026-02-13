@@ -129,5 +129,9 @@ cloud-bridge metrics
 cloud-bridge health
 ```
 
+**Caller Contract**
+- `/Users/shawnlawyer/cloud-bridge/CALLER_CONTRACT.md`
+- Minimal Python caller: `/Users/shawnlawyer/cloud-bridge/examples/minimal_client.py`
+
 **License**
 MIT
