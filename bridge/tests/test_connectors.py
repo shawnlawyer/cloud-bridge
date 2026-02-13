@@ -17,10 +17,9 @@ class TestConnectors(unittest.TestCase):
         mux = ReadOnlyMux([DummyConnector([1]), DummyConnector([2, 3])])
         self.assertEqual(mux.read_all(), [1, 2, 3])
 
-    def test_write_is_blocked(self):
+    def test_connector_cannot_expose_write_method(self):
         c = DummyConnector([1])
-        with self.assertRaises(RuntimeError):
-            c.write("x")
+        self.assertFalse(hasattr(c, "write"))
 
     def test_mux_rejects_non_readonly(self):
         class NotReadOnly:

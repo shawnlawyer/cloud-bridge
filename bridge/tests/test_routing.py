@@ -44,6 +44,20 @@ class TestRouting(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             route(env, r)
 
+    def test_route_hop_over_max_raises(self):
+        r = Registry()
+        r.register(AgentRecord(agent_id="agent-b", bridge_id="bridge-2"))
+        env = Envelope(
+            gtid="cb:1:bridge-1:local",
+            schema_version="1.0",
+            from_agent="agent-a",
+            to_agent="agent-b",
+            payload={"msg": "hello"},
+            hop_count=MAX_HOPS + 1,
+        )
+        with self.assertRaises(RuntimeError):
+            route(env, r)
+
     def test_route_below_hop_cap_ok(self):
         r = Registry()
         r.register(AgentRecord(agent_id="agent-b", bridge_id="bridge-2"))
