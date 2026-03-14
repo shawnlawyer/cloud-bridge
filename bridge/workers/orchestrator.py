@@ -59,3 +59,30 @@ def process_next_task(store_root: str | Path, worker_id: str) -> dict:
         "result": result.to_dict(),
         "error": None,
     }
+
+
+def dispatch_tasks(store_root: str | Path, limit: int = 1) -> dict:
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    results = []
+    processed = 0
+    worker_ids = [manifest.worker_id for manifest in list_default_manifests()]
+
+    while processed < limit:
+        progressed = False
+        for worker_id in worker_ids:
+            if processed >= limit:
+                break
+            out = process_next_task(store_root, worker_id)
+            if out["processed"]:
+                results.append(out)
+                processed += 1
+                progressed = True
+        if not progressed:
+            break
+
+    return {
+        "processed_count": processed,
+        "results": results,
+    }

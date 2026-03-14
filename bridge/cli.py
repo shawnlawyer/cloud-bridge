@@ -12,8 +12,12 @@ from bridge.ingest.chat_export import ingest_chat_export
 from bridge.observability.metrics import record, snapshot
 from bridge.observability.metrics import record_many
 from bridge.workers import (
+    CloudTransportConfig,
+    apply_store_export_plan,
     WorkerTask,
     build_default_runner,
+    build_store_export_plan,
+    dispatch_tasks,
     enqueue_task,
     list_manifests,
     list_store_tasks,
@@ -146,6 +150,54 @@ def run_ingest_chat_export(request: dict) -> dict:
     return {"ingested": out, "metrics": snapshot()}
 
 
+def run_worker_dispatch(request: dict) -> dict:
+    store_root = request.get("store_root")
+    limit = request.get("limit", 1)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    out = dispatch_tasks(store_root, limit=limit)
+    events = ["worker_dispatch"] + (["worker_dispatch_step"] * out["processed_count"])
+    if out["processed_count"] == 0:
+        events.append("worker_dispatch_idle")
+    record_many(events)
+    out["metrics"] = snapshot()
+    return out
+
+
+def run_worker_cloud_export(request: dict) -> dict:
+    store_root = request.get("store_root")
+    bucket = request.get("bucket")
+    region = request.get("region")
+    queue_prefix = request.get("queue_prefix")
+    execute = request.get("execute", False)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(bucket, str) or not bucket:
+        raise ValueError("bucket must be a non-empty string")
+    if not isinstance(region, str) or not region:
+        raise ValueError("region must be a non-empty string")
+    if not isinstance(queue_prefix, str) or not queue_prefix:
+        raise ValueError("queue_prefix must be a non-empty string")
+    if not isinstance(execute, bool):
+        raise ValueError("execute must be a boolean")
+
+    config = CloudTransportConfig(bucket=bucket, region=region, queue_prefix=queue_prefix)
+    plan = build_store_export_plan(store_root, config)
+    out = {"plan": plan.to_dict(bucket)}
+    events = ["worker_cloud_plan"]
+    if execute:
+        out["applied"] = apply_store_export_plan(plan, config)
+        events.append("worker_cloud_execute")
+    record_many(events)
+    out["metrics"] = snapshot()
+    return out
+
+
 def get_metrics() -> dict:
     return {"metrics": snapshot()}
 
@@ -185,6 +237,15 @@ def main(argv: list[str] | None = None) -> int:
     worker_process_parser = sub.add_parser("worker-process", help="Process one queued task for a worker")
     worker_process_parser.add_argument("--store-root", required=True)
     worker_process_parser.add_argument("--worker", required=True)
+    worker_dispatch_parser = sub.add_parser("worker-dispatch", help="Process up to N queued tasks across manifests")
+    worker_dispatch_parser.add_argument("--store-root", required=True)
+    worker_dispatch_parser.add_argument("--limit", type=int, default=1)
+    worker_cloud_export_parser = sub.add_parser("worker-cloud-export", help="Plan or execute cloud export for the worker store")
+    worker_cloud_export_parser.add_argument("--store-root", required=True)
+    worker_cloud_export_parser.add_argument("--bucket", required=True)
+    worker_cloud_export_parser.add_argument("--region", required=True)
+    worker_cloud_export_parser.add_argument("--queue-prefix", required=True)
+    worker_cloud_export_parser.add_argument("--execute", action="store_true")
     ingest_parser = sub.add_parser("ingest-chat-export", help="Ingest a local chat export into the worker store")
     ingest_parser.add_argument("--input", required=True)
     ingest_parser.add_argument("--store-root", required=True)
@@ -218,6 +279,20 @@ def main(argv: list[str] | None = None) -> int:
             _emit(run_worker_store_list({"store_root": args.store_root}))
         elif args.command == "worker-process":
             _emit(run_worker_process({"store_root": args.store_root, "worker_id": args.worker}))
+        elif args.command == "worker-dispatch":
+            _emit(run_worker_dispatch({"store_root": args.store_root, "limit": args.limit}))
+        elif args.command == "worker-cloud-export":
+            _emit(
+                run_worker_cloud_export(
+                    {
+                        "store_root": args.store_root,
+                        "bucket": args.bucket,
+                        "region": args.region,
+                        "queue_prefix": args.queue_prefix,
+                        "execute": args.execute,
+                    }
+                )
+            )
         elif args.command == "ingest-chat-export":
             _emit(
                 run_ingest_chat_export(

@@ -187,12 +187,32 @@ CLI surface:
 - `cloud-bridge worker-enqueue --store-root <path> < task.json`
 - `cloud-bridge worker-store-list --store-root <path>`
 - `cloud-bridge worker-process --store-root <path> --worker <worker_id>`
+- `cloud-bridge worker-dispatch --store-root <path> --limit <n>`
 
 HTTP surface:
 
 - `GET /worker/manifests`
 
 The HTTP layer remains read-only for manifests. Store mutation and orchestration remain explicit CLI or library operations.
+
+## Phase 4 Cloud Export
+
+Phase 4 adds an explicit cloud transport layer for the worker store.
+
+Library:
+
+- `/Users/shawnlawyer/cloud-bridge/bridge/workers/cloud_transport.py`
+
+Capabilities:
+
+- builds a deterministic export plan for tasks and receipts
+- maps pending tasks to per-worker FIFO queue messages
+- can optionally execute that plan through the AWS CLI
+
+CLI surface:
+
+- `cloud-bridge worker-cloud-export --store-root <path> --bucket <bucket> --region <region> --queue-prefix <prefix>`
+- add `--execute` to apply the plan
 
 ## Failure Model
 
@@ -232,8 +252,6 @@ HTTP:
 Not included yet:
 
 - background polling
-- multi-worker orchestration
-- cloud transport
 - autonomous execution
 
 Those belong to later phases.

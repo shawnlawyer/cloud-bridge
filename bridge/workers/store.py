@@ -245,6 +245,12 @@ class FileTaskStore:
             records.append(TaskRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
         return tuple(records)
 
+    def list_receipts(self) -> tuple[ReceiptRecord, ...]:
+        records = []
+        for path in sorted(self.receipts_dir.glob("*.json")):
+            records.append(ReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+        return tuple(records)
+
     def _task_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id.replace(':', '__')}.json"
 

@@ -58,6 +58,7 @@ python -m unittest
 - `Staff Phase 1`: bounded local worker contract and runner
 - `Staff Phase 2`: durable local task store and explicit worker manifests
 - `Staff Phase 3`: bounded orchestration and first ingestion path
+- `Staff Phase 4`: explicit cloud export plan for the worker store
 - `Persistent store`: explicit CLI/library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
@@ -136,6 +137,8 @@ cloud-bridge worker-manifests
 cloud-bridge worker-enqueue --store-root /tmp/cloud-bridge-store < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
 cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
 cloud-bridge worker-process --store-root /tmp/cloud-bridge-store --worker planner
+cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --limit 4
+cloud-bridge worker-cloud-export --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge
 cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
 cloud-bridge health
@@ -148,6 +151,7 @@ cloud-bridge health
 - Staff gap analysis: `/Users/shawnlawyer/cloud-bridge/STAFF_GAP_ANALYSIS.md`
 - Worker spec: `/Users/shawnlawyer/cloud-bridge/WORKER_SPEC.md`
 - Chat export ingest: `/Users/shawnlawyer/cloud-bridge/CHAT_EXPORT_INGEST.md`
+- Worker cloud transport: `/Users/shawnlawyer/cloud-bridge/WORKER_CLOUD_TRANSPORT.md`
 - Worker manifests: `/Users/shawnlawyer/cloud-bridge/bridge/workers/manifests.py`
 - Durable task store: `/Users/shawnlawyer/cloud-bridge/bridge/workers/store.py`
 - Worker orchestration: `/Users/shawnlawyer/cloud-bridge/bridge/workers/orchestrator.py`
