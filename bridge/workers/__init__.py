@@ -1,5 +1,6 @@
 from .contracts import WorkerDefinition, WorkerResult, WorkerTask
 from .manifests import WorkerManifest, get_default_manifest, list_default_manifests
+from .orchestrator import enqueue_task, list_manifests, list_store_tasks, process_next_task
 from .runner import LocalWorkerRunner, build_default_runner
 from .store import FileTaskStore, ReceiptRecord, TaskRecord, run_next_task
 
@@ -13,7 +14,11 @@ __all__ = [
     "WorkerResult",
     "WorkerTask",
     "build_default_runner",
+    "enqueue_task",
     "get_default_manifest",
+    "list_manifests",
     "list_default_manifests",
+    "list_store_tasks",
+    "process_next_task",
     "run_next_task",
 ]

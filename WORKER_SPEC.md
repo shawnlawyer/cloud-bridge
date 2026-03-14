@@ -166,6 +166,34 @@ The manifests define:
 - expected input keys
 - expected output keys
 
+## Phase 3 Explicit Orchestration
+
+Phase 3 adds a bounded orchestration layer over the durable store.
+
+Library:
+
+- `/Users/shawnlawyer/cloud-bridge/bridge/workers/orchestrator.py`
+
+Boundaries:
+
+- processes at most one queued task per call
+- never spins in a loop
+- never schedules itself
+- stores every result or release back into the explicit file store
+
+CLI surface:
+
+- `cloud-bridge worker-manifests`
+- `cloud-bridge worker-enqueue --store-root <path> < task.json`
+- `cloud-bridge worker-store-list --store-root <path>`
+- `cloud-bridge worker-process --store-root <path> --worker <worker_id>`
+
+HTTP surface:
+
+- `GET /worker/manifests`
+
+The HTTP layer remains read-only for manifests. Store mutation and orchestration remain explicit CLI or library operations.
+
 ## Failure Model
 
 Fail-closed behavior applies at two levels.
@@ -206,7 +234,6 @@ Not included yet:
 - background polling
 - multi-worker orchestration
 - cloud transport
-- external source ingestion
 - autonomous execution
 
 Those belong to later phases.

@@ -3,5 +3,6 @@ __all__ = [
     "federation",
     "connectors",
     "observability",
+    "ingest",
     "workers",
 ]

@@ -9,6 +9,7 @@ This document defines the wire contract for callers of the stateless HTTP runtim
 3. Unsupported or invalid inputs are rejected (fail-closed).
 4. No endpoint performs background work.
 5. No endpoint escalates permissions.
+6. Persistent worker-store operations remain outside the HTTP contract unless explicitly added later.
 
 ## Endpoint: `POST /route`
 
@@ -146,6 +147,46 @@ curl -X POST http://localhost:8080/federate \
 
 ```bash
 curl http://localhost:8080/metrics
+```
+
+## Endpoint: `GET /worker/manifests`
+
+### Response Schema
+
+```json
+{
+  "type": "object",
+  "required": ["manifests", "metrics"],
+  "properties": {
+    "manifests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["worker_id", "role", "capabilities", "allowed_task_types", "mode", "summary", "input_keys", "output_keys"],
+        "properties": {
+          "worker_id": {"type": "string"},
+          "role": {"type": "string"},
+          "capabilities": {"type": "array", "items": {"type": "string"}},
+          "allowed_task_types": {"type": "array", "items": {"type": "string"}},
+          "mode": {"type": "string", "enum": ["analysis-only"]},
+          "summary": {"type": "string"},
+          "input_keys": {"type": "array", "items": {"type": "string"}},
+          "output_keys": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    }
+  }
+}
+```
+
+### Curl
+
+```bash
+curl http://localhost:8080/worker/manifests
 ```
 
 ## Endpoint: `GET /health`

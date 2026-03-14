@@ -8,9 +8,17 @@ from bridge.core.envelope import Envelope
 from bridge.core.routing import route
 from bridge.federation.handshake import handshake
 from bridge.federation.registry import AgentRecord, Registry
+from bridge.ingest.chat_export import ingest_chat_export
 from bridge.observability.metrics import record, snapshot
 from bridge.observability.metrics import record_many
-from bridge.workers import WorkerTask, build_default_runner
+from bridge.workers import (
+    WorkerTask,
+    build_default_runner,
+    enqueue_task,
+    list_manifests,
+    list_store_tasks,
+    process_next_task,
+)
 
 
 def run_route(request: dict) -> dict:
@@ -68,6 +76,76 @@ def run_worker(request: dict) -> dict:
     return {"result": result.to_dict(), "metrics": snapshot()}
 
 
+def run_worker_manifests() -> dict:
+    record("worker_manifest_list")
+    return {"manifests": list(list_manifests()), "metrics": snapshot()}
+
+
+def run_worker_enqueue(request: dict) -> dict:
+    store_root = request.get("store_root")
+    task_data = request.get("task")
+    max_attempts = request.get("max_attempts", 3)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(task_data, dict):
+        raise ValueError("task must be an object")
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("max_attempts must be a positive integer")
+
+    task = WorkerTask(**task_data)
+    record_data = enqueue_task(store_root, task, max_attempts=max_attempts)
+    record("worker_enqueue")
+    return {"task": record_data.to_dict(), "metrics": snapshot()}
+
+
+def run_worker_store_list(request: dict) -> dict:
+    store_root = request.get("store_root")
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+
+    tasks = [record_data.to_dict() for record_data in list_store_tasks(store_root)]
+    record("worker_store_list")
+    return {"tasks": tasks, "metrics": snapshot()}
+
+
+def run_worker_process(request: dict) -> dict:
+    store_root = request.get("store_root")
+    worker_id = request.get("worker_id")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(worker_id, str) or not worker_id:
+        raise ValueError("worker_id must be a non-empty string")
+
+    out = process_next_task(store_root, worker_id)
+    if out["error"] is not None:
+        events = ["worker_process", "worker_process_error"]
+    else:
+        events = ["worker_process", "worker_process_complete" if out["processed"] else "worker_process_idle"]
+    record_many(events)
+    out["metrics"] = snapshot()
+    return out
+
+
+def run_ingest_chat_export(request: dict) -> dict:
+    input_path = request.get("input_path")
+    store_root = request.get("store_root")
+    max_attempts = request.get("max_attempts", 3)
+
+    if not isinstance(input_path, str) or not input_path:
+        raise ValueError("input_path must be a non-empty string")
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("max_attempts must be a positive integer")
+
+    out = ingest_chat_export(input_path, store_root, max_attempts=max_attempts)
+    events = ["worker_ingest"] + (["worker_enqueue"] * out["task_count"])
+    record_many(events)
+    return {"ingested": out, "metrics": snapshot()}
+
+
 def get_metrics() -> dict:
     return {"metrics": snapshot()}
 
@@ -98,6 +176,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("route", help="Route an envelope using stdin JSON")
     sub.add_parser("federate", help="Run handshake using stdin JSON")
     sub.add_parser("worker-run", help="Run one bounded worker task using stdin JSON")
+    sub.add_parser("worker-manifests", help="List built-in worker manifests")
+    worker_enqueue_parser = sub.add_parser("worker-enqueue", help="Enqueue one worker task into a local store")
+    worker_enqueue_parser.add_argument("--store-root", required=True)
+    worker_enqueue_parser.add_argument("--max-attempts", type=int, default=3)
+    worker_store_list_parser = sub.add_parser("worker-store-list", help="List tasks in a local worker store")
+    worker_store_list_parser.add_argument("--store-root", required=True)
+    worker_process_parser = sub.add_parser("worker-process", help="Process one queued task for a worker")
+    worker_process_parser.add_argument("--store-root", required=True)
+    worker_process_parser.add_argument("--worker", required=True)
+    ingest_parser = sub.add_parser("ingest-chat-export", help="Ingest a local chat export into the worker store")
+    ingest_parser.add_argument("--input", required=True)
+    ingest_parser.add_argument("--store-root", required=True)
+    ingest_parser.add_argument("--max-attempts", type=int, default=3)
     sub.add_parser("metrics", help="Show in-process metrics")
     sub.add_parser("health", help="Show service health")
 
@@ -110,6 +201,33 @@ def main(argv: list[str] | None = None) -> int:
             _emit(run_federate(_read_json_stdin()))
         elif args.command == "worker-run":
             _emit(run_worker(_read_json_stdin()))
+        elif args.command == "worker-manifests":
+            _emit(run_worker_manifests())
+        elif args.command == "worker-enqueue":
+            stdin_data = _read_json_stdin()
+            _emit(
+                run_worker_enqueue(
+                    {
+                        "store_root": args.store_root,
+                        "task": stdin_data.get("task", stdin_data),
+                        "max_attempts": args.max_attempts,
+                    }
+                )
+            )
+        elif args.command == "worker-store-list":
+            _emit(run_worker_store_list({"store_root": args.store_root}))
+        elif args.command == "worker-process":
+            _emit(run_worker_process({"store_root": args.store_root, "worker_id": args.worker}))
+        elif args.command == "ingest-chat-export":
+            _emit(
+                run_ingest_chat_export(
+                    {
+                        "input_path": args.input,
+                        "store_root": args.store_root,
+                        "max_attempts": args.max_attempts,
+                    }
+                )
+            )
         elif args.command == "metrics":
             _emit(get_metrics())
         else:

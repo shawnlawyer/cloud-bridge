@@ -57,7 +57,8 @@ python -m unittest
 - `No background daemon`: no scheduler, no hidden loop lifecycle
 - `Staff Phase 1`: bounded local worker contract and runner
 - `Staff Phase 2`: durable local task store and explicit worker manifests
-- `Persistent store`: explicit library component only; not enabled implicitly by HTTP
+- `Staff Phase 3`: bounded orchestration and first ingestion path
+- `Persistent store`: explicit CLI/library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
 Install API extras:
@@ -74,6 +75,7 @@ Endpoints:
 - `POST /route`
 - `POST /federate`
 - `POST /worker/run`
+- `GET /worker/manifests`
 - `GET /metrics`
 - `GET /health`
 
@@ -130,6 +132,11 @@ Example `POST /federate` body:
 cloud-bridge route < input.json
 cloud-bridge federate < input.json
 cloud-bridge worker-run < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
+cloud-bridge worker-manifests
+cloud-bridge worker-enqueue --store-root /tmp/cloud-bridge-store < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
+cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
+cloud-bridge worker-process --store-root /tmp/cloud-bridge-store --worker planner
+cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
 cloud-bridge health
 ```
@@ -140,8 +147,10 @@ cloud-bridge health
 - Federated peer spike runbook: `/Users/shawnlawyer/cloud-bridge/FEDERATED_PEER_SPIKE.md`
 - Staff gap analysis: `/Users/shawnlawyer/cloud-bridge/STAFF_GAP_ANALYSIS.md`
 - Worker spec: `/Users/shawnlawyer/cloud-bridge/WORKER_SPEC.md`
+- Chat export ingest: `/Users/shawnlawyer/cloud-bridge/CHAT_EXPORT_INGEST.md`
 - Worker manifests: `/Users/shawnlawyer/cloud-bridge/bridge/workers/manifests.py`
 - Durable task store: `/Users/shawnlawyer/cloud-bridge/bridge/workers/store.py`
+- Worker orchestration: `/Users/shawnlawyer/cloud-bridge/bridge/workers/orchestrator.py`
 
 **License**
 MIT

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "conv-1",
+    "title": "Sample Conversation",
+    "messages": [
+      {"role": "user", "text": "Summarize my prep notes."},
+      {"role": "assistant", "text": "Send me the notes and I will condense them."}
+    ]
+  }
+]
