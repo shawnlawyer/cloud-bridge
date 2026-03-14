@@ -1,0 +1,13 @@
+{
+  "task": {
+    "task_id": "task-plan-001",
+    "thread_id": "kitchen-weekly",
+    "worker_id": "planner",
+    "task_type": "plan",
+    "payload": {
+      "items": ["inventory herbs", "review prep list", "order produce"]
+    },
+    "requires": ["plan"],
+    "effects": []
+  }
+}

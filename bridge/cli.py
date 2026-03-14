@@ -9,6 +9,8 @@ from bridge.core.routing import route
 from bridge.federation.handshake import handshake
 from bridge.federation.registry import AgentRecord, Registry
 from bridge.observability.metrics import record, snapshot
+from bridge.observability.metrics import record_many
+from bridge.workers import WorkerTask, build_default_runner
 
 
 def run_route(request: dict) -> dict:
@@ -50,6 +52,22 @@ def run_federate(request: dict) -> dict:
     }
 
 
+def run_worker(request: dict) -> dict:
+    task_data = request.get("task")
+    if not isinstance(task_data, dict):
+        raise ValueError("task must be an object")
+
+    runner = build_default_runner()
+    task = WorkerTask(**task_data)
+    result = runner.run(task)
+
+    events = ["worker_run", "worker_complete"]
+    if result.status == "rejected":
+        events[-1] = "worker_reject"
+    record_many(events)
+    return {"result": result.to_dict(), "metrics": snapshot()}
+
+
 def get_metrics() -> dict:
     return {"metrics": snapshot()}
 
@@ -79,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("route", help="Route an envelope using stdin JSON")
     sub.add_parser("federate", help="Run handshake using stdin JSON")
+    sub.add_parser("worker-run", help="Run one bounded worker task using stdin JSON")
     sub.add_parser("metrics", help="Show in-process metrics")
     sub.add_parser("health", help="Show service health")
 
@@ -89,12 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             _emit(run_route(_read_json_stdin()))
         elif args.command == "federate":
             _emit(run_federate(_read_json_stdin()))
+        elif args.command == "worker-run":
+            _emit(run_worker(_read_json_stdin()))
         elif args.command == "metrics":
             _emit(get_metrics())
         else:
             _emit(get_health())
         return 0
-    except (ValueError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
+    except (TypeError, ValueError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 2
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from bridge.cli import get_health, get_metrics, run_federate, run_route
+from bridge.cli import get_health, get_metrics, run_federate, run_route, run_worker
 
 app = FastAPI(title="Cloud Bridge API", version="0.1.1")
 
@@ -11,7 +11,7 @@ app = FastAPI(title="Cloud Bridge API", version="0.1.1")
 def route_endpoint(request: dict) -> dict:
     try:
         return run_route(request)
-    except (ValueError, KeyError, RuntimeError) as exc:
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -19,7 +19,15 @@ def route_endpoint(request: dict) -> dict:
 def federate_endpoint(request: dict) -> dict:
     try:
         return run_federate(request)
-    except (ValueError, KeyError, RuntimeError) as exc:
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/worker/run")
+def worker_run_endpoint(request: dict) -> dict:
+    try:
+        return run_worker(request)
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

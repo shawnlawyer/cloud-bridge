@@ -55,6 +55,9 @@ python -m unittest
 - `HTTP`: stateless request/response service
 - `CLI`: local deterministic wrapper
 - `No background daemon`: no scheduler, no hidden loop lifecycle
+- `Staff Phase 1`: bounded local worker contract and runner
+- `Staff Phase 2`: durable local task store and explicit worker manifests
+- `Persistent store`: explicit library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
 Install API extras:
@@ -70,6 +73,7 @@ uvicorn bridge.api.app:app --host 0.0.0.0 --port 8080
 Endpoints:
 - `POST /route`
 - `POST /federate`
+- `POST /worker/run`
 - `GET /metrics`
 - `GET /health`
 
@@ -125,6 +129,7 @@ Example `POST /federate` body:
 ```bash
 cloud-bridge route < input.json
 cloud-bridge federate < input.json
+cloud-bridge worker-run < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
 cloud-bridge metrics
 cloud-bridge health
 ```
@@ -133,6 +138,10 @@ cloud-bridge health
 - `/Users/shawnlawyer/cloud-bridge/CALLER_CONTRACT.md`
 - Minimal Python caller: `/Users/shawnlawyer/cloud-bridge/examples/minimal_client.py`
 - Federated peer spike runbook: `/Users/shawnlawyer/cloud-bridge/FEDERATED_PEER_SPIKE.md`
+- Staff gap analysis: `/Users/shawnlawyer/cloud-bridge/STAFF_GAP_ANALYSIS.md`
+- Worker spec: `/Users/shawnlawyer/cloud-bridge/WORKER_SPEC.md`
+- Worker manifests: `/Users/shawnlawyer/cloud-bridge/bridge/workers/manifests.py`
+- Durable task store: `/Users/shawnlawyer/cloud-bridge/bridge/workers/store.py`
 
 **License**
 MIT
