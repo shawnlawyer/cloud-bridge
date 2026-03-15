@@ -180,6 +180,7 @@ Boundaries:
 - never spins in a loop
 - never schedules itself
 - stores every result or release back into the explicit file store
+- uses per-manifest dispatch policy instead of raw manifest order
 
 CLI surface:
 
@@ -207,11 +208,16 @@ Capabilities:
 
 - builds a deterministic export plan for tasks and receipts
 - maps pending tasks to per-worker FIFO queue messages
+- maps failed tasks to per-worker dead-letter queues
+- can sync exported task and receipt records back into the local store
+- can replay dead-letter tasks back to `pending`
 - can optionally execute that plan through the AWS CLI
 
 CLI surface:
 
 - `cloud-bridge worker-cloud-export --store-root <path> --bucket <bucket> --region <region> --queue-prefix <prefix>`
+- `cloud-bridge worker-store-sync --store-root <path> --input <payload.json>`
+- `cloud-bridge worker-cloud-replay --store-root <path> --input <payload.json>`
 - add `--execute` to apply the plan
 
 ## Failure Model

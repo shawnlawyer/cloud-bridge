@@ -6,11 +6,30 @@ from .contracts import WorkerDefinition
 
 
 @dataclass(frozen=True)
+class DispatchPolicy:
+    priority: int
+    max_claims_per_cycle: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.priority, int) or self.priority < 0:
+            raise ValueError("dispatch priority must be >= 0")
+        if not isinstance(self.max_claims_per_cycle, int) or self.max_claims_per_cycle <= 0:
+            raise ValueError("max_claims_per_cycle must be > 0")
+
+    def to_dict(self) -> dict:
+        return {
+            "priority": self.priority,
+            "max_claims_per_cycle": self.max_claims_per_cycle,
+        }
+
+
+@dataclass(frozen=True)
 class WorkerManifest:
     definition: WorkerDefinition
     summary: str
     input_keys: tuple[str, ...]
     output_keys: tuple[str, ...]
+    dispatch_policy: DispatchPolicy
 
     @property
     def worker_id(self) -> str:
@@ -26,6 +45,7 @@ class WorkerManifest:
             "summary": self.summary,
             "input_keys": list(self.input_keys),
             "output_keys": list(self.output_keys),
+            "dispatch_policy": self.dispatch_policy.to_dict(),
         }
 
 
@@ -40,6 +60,7 @@ DEFAULT_MANIFESTS = (
         summary="Indexes records and produces deterministic summaries.",
         input_keys=("records", "texts"),
         output_keys=("record_count", "records", "entry_count", "summary"),
+        dispatch_policy=DispatchPolicy(priority=2, max_claims_per_cycle=1),
     ),
     WorkerManifest(
         definition=WorkerDefinition(
@@ -51,6 +72,7 @@ DEFAULT_MANIFESTS = (
         summary="Produces bounded text drafts and rewrites.",
         input_keys=("title", "points", "text"),
         output_keys=("document",),
+        dispatch_policy=DispatchPolicy(priority=3, max_claims_per_cycle=1),
     ),
     WorkerManifest(
         definition=WorkerDefinition(
@@ -62,6 +84,7 @@ DEFAULT_MANIFESTS = (
         summary="Orders work into explicit deterministic steps.",
         input_keys=("items",),
         output_keys=("steps",),
+        dispatch_policy=DispatchPolicy(priority=1, max_claims_per_cycle=2),
     ),
     WorkerManifest(
         definition=WorkerDefinition(
@@ -73,6 +96,7 @@ DEFAULT_MANIFESTS = (
         summary="Checks proposals for missing constraints and risky effects.",
         input_keys=("objective", "constraints", "proposed_effects"),
         output_keys=("approved", "missing", "proposed_effects", "constraints"),
+        dispatch_policy=DispatchPolicy(priority=0, max_claims_per_cycle=1),
     ),
 )
 

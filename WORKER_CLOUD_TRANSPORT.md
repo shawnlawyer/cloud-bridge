@@ -21,6 +21,7 @@ The transport exports:
 - task records to S3 object keys under `tasks/<worker_id>/`
 - receipt records to S3 object keys under `receipts/<worker_id>/`
 - queue signals for pending tasks to per-worker FIFO queues
+- dead-letter signals for failed tasks to per-worker DLQ queues
 
 ## CLI
 
@@ -35,6 +36,26 @@ cloud-bridge worker-cloud-export \
 Add `--execute` to actually call the AWS CLI.
 
 Without `--execute`, the command returns the export plan only.
+
+## Store Sync
+
+Import task and receipt records from a saved export payload:
+
+```bash
+cloud-bridge worker-store-sync \
+  --store-root /tmp/cloud-bridge-store \
+  --input export.json
+```
+
+## Dead-Letter Replay
+
+Replay failed tasks from a saved export payload:
+
+```bash
+cloud-bridge worker-cloud-replay \
+  --store-root /tmp/cloud-bridge-store \
+  --input export.json
+```
 
 ## Dispatch
 

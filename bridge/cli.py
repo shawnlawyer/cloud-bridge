@@ -14,6 +14,7 @@ from bridge.observability.metrics import record_many
 from bridge.workers import (
     CloudTransportConfig,
     apply_store_export_plan,
+    replay_dead_letters,
     WorkerTask,
     build_default_runner,
     build_store_export_plan,
@@ -22,6 +23,7 @@ from bridge.workers import (
     list_manifests,
     list_store_tasks,
     process_next_task,
+    sync_store_from_cloud_payload,
 )
 
 
@@ -198,6 +200,44 @@ def run_worker_cloud_export(request: dict) -> dict:
     return out
 
 
+def run_worker_store_sync(request: dict) -> dict:
+    store_root = request.get("store_root")
+    input_path = request.get("input_path")
+    force = request.get("force", False)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(input_path, str) or not input_path:
+        raise ValueError("input_path must be a non-empty string")
+    if not isinstance(force, bool):
+        raise ValueError("force must be a boolean")
+
+    with open(input_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    out = sync_store_from_cloud_payload(store_root, payload, force=force)
+    record("worker_store_sync")
+    return {"synced": out, "metrics": snapshot()}
+
+
+def run_worker_cloud_replay(request: dict) -> dict:
+    store_root = request.get("store_root")
+    input_path = request.get("input_path")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(input_path, str) or not input_path:
+        raise ValueError("input_path must be a non-empty string")
+
+    with open(input_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    out = replay_dead_letters(store_root, payload)
+    events = ["worker_cloud_replay"] + (["worker_enqueue"] * len(out["task_ids"]))
+    record_many(events)
+    return {"replayed": out, "metrics": snapshot()}
+
+
 def get_metrics() -> dict:
     return {"metrics": snapshot()}
 
@@ -234,6 +274,10 @@ def main(argv: list[str] | None = None) -> int:
     worker_enqueue_parser.add_argument("--max-attempts", type=int, default=3)
     worker_store_list_parser = sub.add_parser("worker-store-list", help="List tasks in a local worker store")
     worker_store_list_parser.add_argument("--store-root", required=True)
+    worker_store_sync_parser = sub.add_parser("worker-store-sync", help="Sync task and receipt records from a cloud export payload")
+    worker_store_sync_parser.add_argument("--store-root", required=True)
+    worker_store_sync_parser.add_argument("--input", required=True)
+    worker_store_sync_parser.add_argument("--force", action="store_true")
     worker_process_parser = sub.add_parser("worker-process", help="Process one queued task for a worker")
     worker_process_parser.add_argument("--store-root", required=True)
     worker_process_parser.add_argument("--worker", required=True)
@@ -246,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     worker_cloud_export_parser.add_argument("--region", required=True)
     worker_cloud_export_parser.add_argument("--queue-prefix", required=True)
     worker_cloud_export_parser.add_argument("--execute", action="store_true")
+    worker_cloud_replay_parser = sub.add_parser("worker-cloud-replay", help="Replay dead-letter tasks from a cloud export payload")
+    worker_cloud_replay_parser.add_argument("--store-root", required=True)
+    worker_cloud_replay_parser.add_argument("--input", required=True)
     ingest_parser = sub.add_parser("ingest-chat-export", help="Ingest a local chat export into the worker store")
     ingest_parser.add_argument("--input", required=True)
     ingest_parser.add_argument("--store-root", required=True)
@@ -277,6 +324,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "worker-store-list":
             _emit(run_worker_store_list({"store_root": args.store_root}))
+        elif args.command == "worker-store-sync":
+            _emit(
+                run_worker_store_sync(
+                    {
+                        "store_root": args.store_root,
+                        "input_path": args.input,
+                        "force": args.force,
+                    }
+                )
+            )
         elif args.command == "worker-process":
             _emit(run_worker_process({"store_root": args.store_root, "worker_id": args.worker}))
         elif args.command == "worker-dispatch":
@@ -290,6 +347,15 @@ def main(argv: list[str] | None = None) -> int:
                         "region": args.region,
                         "queue_prefix": args.queue_prefix,
                         "execute": args.execute,
+                    }
+                )
+            )
+        elif args.command == "worker-cloud-replay":
+            _emit(
+                run_worker_cloud_replay(
+                    {
+                        "store_root": args.store_root,
+                        "input_path": args.input,
                     }
                 )
             )

@@ -9,7 +9,7 @@ class TestWorkerDispatch(unittest.TestCase):
     def setUp(self) -> None:
         reset()
 
-    def test_dispatch_round_robins_across_manifest_order(self):
+    def test_dispatch_uses_manifest_policies(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             run_worker_enqueue(
                 {
@@ -59,7 +59,7 @@ class TestWorkerDispatch(unittest.TestCase):
             self.assertEqual(out["processed_count"], 3)
             self.assertEqual(
                 [item["worker_id"] for item in out["results"]],
-                ["archivist", "planner", "planner"],
+                ["planner", "planner", "archivist"],
             )
             self.assertEqual(out["metrics"]["worker_dispatch"], 1)
             self.assertEqual(out["metrics"]["worker_dispatch_step"], 3)

@@ -9,6 +9,8 @@ from .runner import LocalWorkerRunner
 
 _TASK_STATUS_VALUES = frozenset({"pending", "claimed", "done", "failed"})
 _RECEIPT_STATUS_VALUES = frozenset({"open", "completed", "released"})
+_TASK_STATUS_PRIORITY = {"pending": 0, "claimed": 1, "done": 2, "failed": 2}
+_RECEIPT_STATUS_PRIORITY = {"open": 0, "completed": 1, "released": 1}
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -251,6 +253,51 @@ class FileTaskStore:
             records.append(ReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
         return tuple(records)
 
+    def upsert_task_record(self, record: TaskRecord, force: bool = False) -> TaskRecord:
+        path = self._task_path(record.task.task_id)
+        if not path.exists():
+            self._write_task(record)
+            _append_jsonl(self.events_path, {"event": "task_synced", "task_id": record.task.task_id})
+            return record
+
+        existing = self.get(record.task.task_id)
+        if not force and not _incoming_task_wins(existing, record):
+            return existing
+
+        self._write_task(record)
+        _append_jsonl(self.events_path, {"event": "task_synced", "task_id": record.task.task_id})
+        return record
+
+    def upsert_receipt_record(self, receipt: ReceiptRecord, force: bool = False) -> ReceiptRecord:
+        path = self._receipt_path(receipt.receipt_id)
+        if not path.exists():
+            self._write_receipt(receipt)
+            _append_jsonl(self.events_path, {"event": "receipt_synced", "receipt_id": receipt.receipt_id})
+            return receipt
+
+        existing = self._load_receipt(receipt.receipt_id)
+        if not force and not _incoming_receipt_wins(existing, receipt):
+            return existing
+
+        self._write_receipt(receipt)
+        _append_jsonl(self.events_path, {"event": "receipt_synced", "receipt_id": receipt.receipt_id})
+        return receipt
+
+    def sync_records(
+        self,
+        task_records: tuple[TaskRecord, ...] | list[TaskRecord] = (),
+        receipt_records: tuple[ReceiptRecord, ...] | list[ReceiptRecord] = (),
+        force: bool = False,
+    ) -> dict:
+        synced_tasks = [self.upsert_task_record(record, force=force).task.task_id for record in task_records]
+        synced_receipts = [
+            self.upsert_receipt_record(receipt, force=force).receipt_id for receipt in receipt_records
+        ]
+        return {
+            "task_ids": synced_tasks,
+            "receipt_ids": synced_receipts,
+        }
+
     def _task_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id.replace(':', '__')}.json"
 
@@ -284,3 +331,25 @@ def run_next_task(store: FileTaskStore, runner: LocalWorkerRunner, worker_id: st
 
     store.complete(receipt.receipt_id, result)
     return result
+
+
+def _incoming_task_wins(existing: TaskRecord, incoming: TaskRecord) -> bool:
+    existing_key = (
+        existing.attempt,
+        _TASK_STATUS_PRIORITY[existing.status],
+        1 if existing.result is not None else 0,
+        1 if existing.last_error else 0,
+    )
+    incoming_key = (
+        incoming.attempt,
+        _TASK_STATUS_PRIORITY[incoming.status],
+        1 if incoming.result is not None else 0,
+        1 if incoming.last_error else 0,
+    )
+    return incoming_key > existing_key
+
+
+def _incoming_receipt_wins(existing: ReceiptRecord, incoming: ReceiptRecord) -> bool:
+    existing_key = (existing.attempt, _RECEIPT_STATUS_PRIORITY[existing.status])
+    incoming_key = (incoming.attempt, _RECEIPT_STATUS_PRIORITY[incoming.status])
+    return incoming_key > existing_key

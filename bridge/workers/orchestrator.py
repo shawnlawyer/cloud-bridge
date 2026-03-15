@@ -67,17 +67,25 @@ def dispatch_tasks(store_root: str | Path, limit: int = 1) -> dict:
 
     results = []
     processed = 0
-    worker_ids = [manifest.worker_id for manifest in list_default_manifests()]
+    manifests = sorted(
+        list_default_manifests(),
+        key=lambda manifest: (
+            manifest.dispatch_policy.priority,
+            manifest.worker_id,
+        ),
+    )
 
     while processed < limit:
         progressed = False
-        for worker_id in worker_ids:
-            if processed >= limit:
-                break
-            out = process_next_task(store_root, worker_id)
-            if out["processed"]:
+        for manifest in manifests:
+            claims = 0
+            while claims < manifest.dispatch_policy.max_claims_per_cycle and processed < limit:
+                out = process_next_task(store_root, manifest.worker_id)
+                if not out["processed"]:
+                    break
                 results.append(out)
                 processed += 1
+                claims += 1
                 progressed = True
         if not progressed:
             break

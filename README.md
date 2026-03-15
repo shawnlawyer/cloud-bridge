@@ -136,9 +136,11 @@ cloud-bridge worker-run < /Users/shawnlawyer/cloud-bridge/examples/worker_task.j
 cloud-bridge worker-manifests
 cloud-bridge worker-enqueue --store-root /tmp/cloud-bridge-store < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
 cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
+cloud-bridge worker-store-sync --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge worker-process --store-root /tmp/cloud-bridge-store --worker planner
 cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --limit 4
 cloud-bridge worker-cloud-export --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge
+cloud-bridge worker-cloud-replay --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
 cloud-bridge health
