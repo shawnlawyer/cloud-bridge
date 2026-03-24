@@ -82,13 +82,17 @@ class _FetchedQueueBatch:
 
 class AwsCliRunner:
     def run(self, args: list[str], input_text: str | None = None) -> str:
-        completed = subprocess.run(
-            args,
-            input=input_text,
-            capture_output=True,
-            check=True,
-            text=True,
-        )
+        try:
+            completed = subprocess.run(
+                args,
+                input=input_text,
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise RuntimeError(f"AWS CLI failed: {detail}") from exc
         return completed.stdout.strip()
 
 

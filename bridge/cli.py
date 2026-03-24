@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 
 from bridge.core.envelope import Envelope
@@ -388,6 +389,13 @@ def _emit(data: dict) -> None:
     sys.stdout.write("\n")
 
 
+def _format_error(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        return detail or str(exc)
+    return str(exc)
+
+
 def _parse_worker_ids(value: str | None) -> list[str] | None:
     if value is None:
         return None
@@ -570,8 +578,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _emit(get_health())
         return 0
-    except (TypeError, ValueError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
-        sys.stderr.write(f"error: {exc}\n")
+    except (TypeError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"error: {_format_error(exc)}\n")
         return 2
 
 

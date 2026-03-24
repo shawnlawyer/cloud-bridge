@@ -1,6 +1,8 @@
 import json
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from bridge.workers import FileTaskStore, WorkerTask, build_default_runner, run_next_task
 from bridge.workers.cloud_transport import (
@@ -55,6 +57,20 @@ class FakeAwsCliRunner(AwsCliRunner):
 
 
 class TestWorkerCloudTransport(unittest.TestCase):
+    def test_aws_cli_runner_wraps_subprocess_errors(self):
+        runner = AwsCliRunner()
+        with mock.patch("bridge.workers.cloud_transport.subprocess.run") as run_mock:
+            run_mock.side_effect = subprocess.CalledProcessError(
+                returncode=254,
+                cmd=["aws", "sqs", "get-queue-url"],
+                stderr="An error occurred (AWS.SimpleQueueService.NonExistentQueue) when calling the GetQueueUrl operation: The specified queue does not exist.\n",
+            )
+            with self.assertRaises(RuntimeError) as exc:
+                runner.run(["aws", "sqs", "get-queue-url"])
+
+        self.assertIn("AWS CLI failed", str(exc.exception))
+        self.assertIn("NonExistentQueue", str(exc.exception))
+
     def test_build_store_export_plan_includes_objects_and_pending_signal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = FileTaskStore(temp_dir)
