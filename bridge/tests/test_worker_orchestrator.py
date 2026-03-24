@@ -18,6 +18,7 @@ class TestWorkerOrchestrator(unittest.TestCase):
     def test_manifest_listing_returns_defaults(self):
         out = run_worker_manifests()
         self.assertEqual([item["worker_id"] for item in out["manifests"]], ["archivist", "scribe", "planner", "guardian"])
+        self.assertIn("admission_rules", out["manifests"][0])
         self.assertEqual(out["metrics"]["worker_manifest_list"], 1)
 
     def test_enqueue_list_and_process_next_task(self):

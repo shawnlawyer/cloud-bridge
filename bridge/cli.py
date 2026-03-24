@@ -20,6 +20,9 @@ from bridge.workers import (
     build_store_export_plan,
     dispatch_tasks,
     enqueue_task,
+    fetch_cloud_payload,
+    FileTaskStore,
+    import_store_from_cloud,
     list_manifests,
     list_store_tasks,
     process_next_task,
@@ -170,6 +173,21 @@ def run_worker_dispatch(request: dict) -> dict:
     return out
 
 
+def run_worker_reclaim(request: dict) -> dict:
+    store_root = request.get("store_root")
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+
+    reclaimed = FileTaskStore(store_root).reclaim_expired()
+    events = ["worker_reclaim"] + (["worker_reclaim_task"] * len(reclaimed))
+    record_many(events)
+    return {
+        "reclaimed_count": len(reclaimed),
+        "reclaimed": [record_data.to_dict() for record_data in reclaimed],
+        "metrics": snapshot(),
+    }
+
+
 def run_worker_cloud_export(request: dict) -> dict:
     store_root = request.get("store_root")
     bucket = request.get("bucket")
@@ -200,6 +218,51 @@ def run_worker_cloud_export(request: dict) -> dict:
     return out
 
 
+def run_worker_cloud_fetch(request: dict) -> dict:
+    bucket = request.get("bucket")
+    region = request.get("region")
+    queue_prefix = request.get("queue_prefix")
+    worker_ids = request.get("worker_ids")
+    task_object_limit = request.get("task_object_limit", 0)
+    receipt_object_limit = request.get("receipt_object_limit", 0)
+    queue_message_limit = request.get("queue_message_limit", 2)
+    include_dlq = request.get("include_dlq", True)
+
+    if not isinstance(bucket, str) or not bucket:
+        raise ValueError("bucket must be a non-empty string")
+    if not isinstance(region, str) or not region:
+        raise ValueError("region must be a non-empty string")
+    if not isinstance(queue_prefix, str) or not queue_prefix:
+        raise ValueError("queue_prefix must be a non-empty string")
+    if worker_ids is not None and (
+        not isinstance(worker_ids, list) or not all(isinstance(worker_id, str) and worker_id for worker_id in worker_ids)
+    ):
+        raise ValueError("worker_ids must be a list of non-empty strings")
+    if not isinstance(task_object_limit, int) or task_object_limit < 0:
+        raise ValueError("task_object_limit must be >= 0")
+    if not isinstance(receipt_object_limit, int) or receipt_object_limit < 0:
+        raise ValueError("receipt_object_limit must be >= 0")
+    if not isinstance(queue_message_limit, int) or queue_message_limit < 0:
+        raise ValueError("queue_message_limit must be >= 0")
+    if not isinstance(include_dlq, bool):
+        raise ValueError("include_dlq must be a boolean")
+
+    config = CloudTransportConfig(bucket=bucket, region=region, queue_prefix=queue_prefix)
+    out = {
+        "payload": fetch_cloud_payload(
+            config,
+            worker_ids=worker_ids,
+            task_object_limit=task_object_limit,
+            receipt_object_limit=receipt_object_limit,
+            queue_message_limit=queue_message_limit,
+            include_dlq=include_dlq,
+        )
+    }
+    record("worker_cloud_fetch")
+    out["metrics"] = snapshot()
+    return out
+
+
 def run_worker_store_sync(request: dict) -> dict:
     store_root = request.get("store_root")
     input_path = request.get("input_path")
@@ -218,6 +281,70 @@ def run_worker_store_sync(request: dict) -> dict:
     out = sync_store_from_cloud_payload(store_root, payload, force=force)
     record("worker_store_sync")
     return {"synced": out, "metrics": snapshot()}
+
+
+def run_worker_cloud_import(request: dict) -> dict:
+    store_root = request.get("store_root")
+    bucket = request.get("bucket")
+    region = request.get("region")
+    queue_prefix = request.get("queue_prefix")
+    worker_ids = request.get("worker_ids")
+    task_object_limit = request.get("task_object_limit", 0)
+    receipt_object_limit = request.get("receipt_object_limit", 0)
+    queue_message_limit = request.get("queue_message_limit", 2)
+    include_dlq = request.get("include_dlq", True)
+    force = request.get("force", False)
+    replay_dlq = request.get("replay_dlq", False)
+    delete_fetched = request.get("delete_fetched", False)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(bucket, str) or not bucket:
+        raise ValueError("bucket must be a non-empty string")
+    if not isinstance(region, str) or not region:
+        raise ValueError("region must be a non-empty string")
+    if not isinstance(queue_prefix, str) or not queue_prefix:
+        raise ValueError("queue_prefix must be a non-empty string")
+    if worker_ids is not None and (
+        not isinstance(worker_ids, list) or not all(isinstance(worker_id, str) and worker_id for worker_id in worker_ids)
+    ):
+        raise ValueError("worker_ids must be a list of non-empty strings")
+    if not isinstance(task_object_limit, int) or task_object_limit < 0:
+        raise ValueError("task_object_limit must be >= 0")
+    if not isinstance(receipt_object_limit, int) or receipt_object_limit < 0:
+        raise ValueError("receipt_object_limit must be >= 0")
+    if not isinstance(queue_message_limit, int) or queue_message_limit < 0:
+        raise ValueError("queue_message_limit must be >= 0")
+    if not isinstance(include_dlq, bool):
+        raise ValueError("include_dlq must be a boolean")
+    if not isinstance(force, bool):
+        raise ValueError("force must be a boolean")
+    if not isinstance(replay_dlq, bool):
+        raise ValueError("replay_dlq must be a boolean")
+    if not isinstance(delete_fetched, bool):
+        raise ValueError("delete_fetched must be a boolean")
+
+    config = CloudTransportConfig(bucket=bucket, region=region, queue_prefix=queue_prefix)
+    out = import_store_from_cloud(
+        store_root,
+        config,
+        worker_ids=worker_ids,
+        task_object_limit=task_object_limit,
+        receipt_object_limit=receipt_object_limit,
+        queue_message_limit=queue_message_limit,
+        include_dlq=include_dlq,
+        force=force,
+        replay_dlq=replay_dlq,
+        delete_fetched=delete_fetched,
+    )
+    events = ["worker_cloud_import", "worker_store_sync"]
+    if out["replayed"]["task_ids"]:
+        events.append("worker_cloud_replay")
+    if out["deleted"]["message_count"]:
+        events.append("worker_cloud_delete")
+    record_many(events)
+    out["metrics"] = snapshot()
+    return out
 
 
 def run_worker_cloud_replay(request: dict) -> dict:
@@ -261,6 +388,15 @@ def _emit(data: dict) -> None:
     sys.stdout.write("\n")
 
 
+def _parse_worker_ids(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    worker_ids = [item.strip() for item in value.split(",") if item.strip()]
+    if not worker_ids:
+        raise ValueError("workers must contain at least one worker id")
+    return worker_ids
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cloud-bridge")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -284,12 +420,36 @@ def main(argv: list[str] | None = None) -> int:
     worker_dispatch_parser = sub.add_parser("worker-dispatch", help="Process up to N queued tasks across manifests")
     worker_dispatch_parser.add_argument("--store-root", required=True)
     worker_dispatch_parser.add_argument("--limit", type=int, default=1)
+    worker_reclaim_parser = sub.add_parser("worker-reclaim", help="Release claimed tasks whose leases have expired")
+    worker_reclaim_parser.add_argument("--store-root", required=True)
     worker_cloud_export_parser = sub.add_parser("worker-cloud-export", help="Plan or execute cloud export for the worker store")
     worker_cloud_export_parser.add_argument("--store-root", required=True)
     worker_cloud_export_parser.add_argument("--bucket", required=True)
     worker_cloud_export_parser.add_argument("--region", required=True)
     worker_cloud_export_parser.add_argument("--queue-prefix", required=True)
     worker_cloud_export_parser.add_argument("--execute", action="store_true")
+    worker_cloud_fetch_parser = sub.add_parser("worker-cloud-fetch", help="Fetch worker records from live S3 and SQS")
+    worker_cloud_fetch_parser.add_argument("--bucket", required=True)
+    worker_cloud_fetch_parser.add_argument("--region", required=True)
+    worker_cloud_fetch_parser.add_argument("--queue-prefix", required=True)
+    worker_cloud_fetch_parser.add_argument("--workers")
+    worker_cloud_fetch_parser.add_argument("--task-object-limit", type=int, default=0)
+    worker_cloud_fetch_parser.add_argument("--receipt-object-limit", type=int, default=0)
+    worker_cloud_fetch_parser.add_argument("--queue-message-limit", type=int, default=2)
+    worker_cloud_fetch_parser.add_argument("--exclude-dlq", action="store_true")
+    worker_cloud_import_parser = sub.add_parser("worker-cloud-import", help="Fetch live S3 and SQS state and sync it into the local worker store")
+    worker_cloud_import_parser.add_argument("--store-root", required=True)
+    worker_cloud_import_parser.add_argument("--bucket", required=True)
+    worker_cloud_import_parser.add_argument("--region", required=True)
+    worker_cloud_import_parser.add_argument("--queue-prefix", required=True)
+    worker_cloud_import_parser.add_argument("--workers")
+    worker_cloud_import_parser.add_argument("--task-object-limit", type=int, default=0)
+    worker_cloud_import_parser.add_argument("--receipt-object-limit", type=int, default=0)
+    worker_cloud_import_parser.add_argument("--queue-message-limit", type=int, default=2)
+    worker_cloud_import_parser.add_argument("--exclude-dlq", action="store_true")
+    worker_cloud_import_parser.add_argument("--force", action="store_true")
+    worker_cloud_import_parser.add_argument("--replay-dead-letters", action="store_true")
+    worker_cloud_import_parser.add_argument("--delete-fetched", action="store_true")
     worker_cloud_replay_parser = sub.add_parser("worker-cloud-replay", help="Replay dead-letter tasks from a cloud export payload")
     worker_cloud_replay_parser.add_argument("--store-root", required=True)
     worker_cloud_replay_parser.add_argument("--input", required=True)
@@ -338,6 +498,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit(run_worker_process({"store_root": args.store_root, "worker_id": args.worker}))
         elif args.command == "worker-dispatch":
             _emit(run_worker_dispatch({"store_root": args.store_root, "limit": args.limit}))
+        elif args.command == "worker-reclaim":
+            _emit(run_worker_reclaim({"store_root": args.store_root}))
         elif args.command == "worker-cloud-export":
             _emit(
                 run_worker_cloud_export(
@@ -347,6 +509,40 @@ def main(argv: list[str] | None = None) -> int:
                         "region": args.region,
                         "queue_prefix": args.queue_prefix,
                         "execute": args.execute,
+                    }
+                )
+            )
+        elif args.command == "worker-cloud-fetch":
+            _emit(
+                run_worker_cloud_fetch(
+                    {
+                        "bucket": args.bucket,
+                        "region": args.region,
+                        "queue_prefix": args.queue_prefix,
+                        "worker_ids": _parse_worker_ids(args.workers),
+                        "task_object_limit": args.task_object_limit,
+                        "receipt_object_limit": args.receipt_object_limit,
+                        "queue_message_limit": args.queue_message_limit,
+                        "include_dlq": not args.exclude_dlq,
+                    }
+                )
+            )
+        elif args.command == "worker-cloud-import":
+            _emit(
+                run_worker_cloud_import(
+                    {
+                        "store_root": args.store_root,
+                        "bucket": args.bucket,
+                        "region": args.region,
+                        "queue_prefix": args.queue_prefix,
+                        "worker_ids": _parse_worker_ids(args.workers),
+                        "task_object_limit": args.task_object_limit,
+                        "receipt_object_limit": args.receipt_object_limit,
+                        "queue_message_limit": args.queue_message_limit,
+                        "include_dlq": not args.exclude_dlq,
+                        "force": args.force,
+                        "replay_dlq": args.replay_dead_letters,
+                        "delete_fetched": args.delete_fetched,
                     }
                 )
             )

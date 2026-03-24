@@ -165,6 +165,8 @@ The manifests define:
 - capabilities
 - expected input keys
 - expected output keys
+- dispatch policy
+- admission rules keyed by task shape
 
 ## Phase 3 Explicit Orchestration
 
@@ -181,6 +183,8 @@ Boundaries:
 - never schedules itself
 - stores every result or release back into the explicit file store
 - uses per-manifest dispatch policy instead of raw manifest order
+- reclaims expired task leases before new claims
+- skips pending tasks that fail manifest admission
 
 CLI surface:
 
@@ -219,6 +223,37 @@ CLI surface:
 - `cloud-bridge worker-store-sync --store-root <path> --input <payload.json>`
 - `cloud-bridge worker-cloud-replay --store-root <path> --input <payload.json>`
 - add `--execute` to apply the plan
+
+## Phase 5 Live Cloud Import And Lease Reclaim
+
+Phase 5 extends the bounded worker layer without adding any new always-on services.
+
+Capabilities:
+
+- fetches live S3 task and receipt objects on demand
+- fetches live SQS and DLQ messages on demand
+- syncs live cloud state back into the local file store
+- can replay live dead-letter tasks back to `pending`
+- can reclaim stuck `claimed` tasks when their leases expire
+- uses manifest admission rules to filter tasks before claim
+
+Cost guardrails:
+
+- no new managed services beyond optional `S3` and `SQS`
+- no background polling
+- queue fetch defaults stay small
+- S3 scans are opt-in through explicit limits
+
+Store additions:
+
+- receipts now carry `lease_expires_at`
+- `FileTaskStore.reclaim_expired()` releases expired claims back to `pending` or `failed`
+
+CLI surface:
+
+- `cloud-bridge worker-reclaim --store-root <path>`
+- `cloud-bridge worker-cloud-fetch --bucket <bucket> --region <region> --queue-prefix <prefix>`
+- `cloud-bridge worker-cloud-import --store-root <path> --bucket <bucket> --region <region> --queue-prefix <prefix>`
 
 ## Failure Model
 

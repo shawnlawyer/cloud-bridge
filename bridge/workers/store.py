@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -24,6 +26,18 @@ def _append_jsonl(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(data, sort_keys=True) + "\n")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -80,6 +94,7 @@ class ReceiptRecord:
     worker_id: str
     attempt: int
     status: str
+    lease_expires_at: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in _RECEIPT_STATUS_VALUES:
@@ -94,6 +109,7 @@ class ReceiptRecord:
             "worker_id": self.worker_id,
             "attempt": self.attempt,
             "status": self.status,
+            "lease_expires_at": self.lease_expires_at,
         }
 
     @classmethod
@@ -104,12 +120,21 @@ class ReceiptRecord:
             worker_id=data["worker_id"],
             attempt=data["attempt"],
             status=data["status"],
+            lease_expires_at=data.get("lease_expires_at"),
         )
+
+    def is_expired(self, now: datetime | None = None) -> bool:
+        if self.status != "open" or self.lease_expires_at is None:
+            return False
+        return _parse_utc(self.lease_expires_at) <= (now or _utc_now())
 
 
 class FileTaskStore:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, lease_seconds: int = 300) -> None:
+        if not isinstance(lease_seconds, int) or lease_seconds <= 0:
+            raise ValueError("lease_seconds must be a positive integer")
         self.root = Path(root)
+        self.lease_seconds = lease_seconds
         self.tasks_dir = self.root / "tasks"
         self.receipts_dir = self.root / "receipts"
         self.events_path = self.root / "events.jsonl"
@@ -129,11 +154,24 @@ class FileTaskStore:
         )
         return record
 
-    def claim(self, worker_id: str) -> ReceiptRecord | None:
+    def claim(
+        self,
+        worker_id: str,
+        predicate: Callable[[TaskRecord], bool] | None = None,
+        now: datetime | None = None,
+        lease_seconds: int | None = None,
+    ) -> ReceiptRecord | None:
+        active_now = now or _utc_now()
+        active_lease_seconds = self.lease_seconds if lease_seconds is None else lease_seconds
+        if not isinstance(active_lease_seconds, int) or active_lease_seconds <= 0:
+            raise ValueError("lease_seconds must be a positive integer")
+
         candidates = [
             record
             for record in self.list_tasks()
-            if record.status == "pending" and record.task.worker_id == worker_id
+            if record.status == "pending"
+            and record.task.worker_id == worker_id
+            and (predicate is None or predicate(record))
         ]
         if not candidates:
             return None
@@ -146,6 +184,7 @@ class FileTaskStore:
             worker_id=worker_id,
             attempt=attempt,
             status="open",
+            lease_expires_at=_format_utc(active_now + timedelta(seconds=active_lease_seconds)),
         )
         updated = replace(
             record,
@@ -201,6 +240,32 @@ class FileTaskStore:
             },
         )
         return updated
+
+    def reclaim_expired(self, now: datetime | None = None) -> tuple[TaskRecord, ...]:
+        active_now = now or _utc_now()
+        reclaimed = []
+        for receipt in self.list_receipts():
+            if not receipt.is_expired(active_now):
+                continue
+            try:
+                record = self.get(receipt.task_id)
+            except KeyError:
+                continue
+            if record.status != "claimed" or record.receipt_id != receipt.receipt_id:
+                continue
+            updated = self.release(receipt.receipt_id, "lease expired")
+            reclaimed.append(updated)
+            _append_jsonl(
+                self.events_path,
+                {
+                    "event": "reclaimed",
+                    "task_id": updated.task.task_id,
+                    "worker_id": receipt.worker_id,
+                    "receipt_id": receipt.receipt_id,
+                    "status": updated.status,
+                },
+            )
+        return tuple(reclaimed)
 
     def release(self, receipt_id: str, reason: str) -> TaskRecord:
         receipt = self._load_receipt(receipt_id)
@@ -318,6 +383,7 @@ class FileTaskStore:
 
 
 def run_next_task(store: FileTaskStore, runner: LocalWorkerRunner, worker_id: str) -> WorkerResult | None:
+    store.reclaim_expired()
     receipt = store.claim(worker_id)
     if receipt is None:
         return None
@@ -350,6 +416,14 @@ def _incoming_task_wins(existing: TaskRecord, incoming: TaskRecord) -> bool:
 
 
 def _incoming_receipt_wins(existing: ReceiptRecord, incoming: ReceiptRecord) -> bool:
-    existing_key = (existing.attempt, _RECEIPT_STATUS_PRIORITY[existing.status])
-    incoming_key = (incoming.attempt, _RECEIPT_STATUS_PRIORITY[incoming.status])
+    existing_key = (
+        existing.attempt,
+        _RECEIPT_STATUS_PRIORITY[existing.status],
+        existing.lease_expires_at or "",
+    )
+    incoming_key = (
+        incoming.attempt,
+        _RECEIPT_STATUS_PRIORITY[incoming.status],
+        incoming.lease_expires_at or "",
+    )
     return incoming_key > existing_key

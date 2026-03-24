@@ -162,7 +162,7 @@ curl http://localhost:8080/metrics
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["worker_id", "role", "capabilities", "allowed_task_types", "mode", "summary", "input_keys", "output_keys", "dispatch_policy"],
+        "required": ["worker_id", "role", "capabilities", "allowed_task_types", "mode", "summary", "input_keys", "output_keys", "dispatch_policy", "admission_rules"],
         "properties": {
           "worker_id": {"type": "string"},
           "role": {"type": "string"},
@@ -178,6 +178,18 @@ curl http://localhost:8080/metrics
             "properties": {
               "priority": {"type": "integer", "minimum": 0},
               "max_claims_per_cycle": {"type": "integer", "minimum": 1}
+            }
+          },
+          "admission_rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["task_type", "required_payload_keys", "allow_effects"],
+              "properties": {
+                "task_type": {"type": "string"},
+                "required_payload_keys": {"type": "array", "items": {"type": "string"}},
+                "allow_effects": {"type": "boolean"}
+              }
             }
           }
         }

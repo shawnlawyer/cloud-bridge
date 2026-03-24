@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from bridge.workers import build_default_runner
@@ -102,6 +103,31 @@ class TestWorkerStore(unittest.TestCase):
             self.assertEqual(record.status, "done")
             self.assertEqual(record.result["status"], "rejected")
             self.assertEqual(store.claim("planner"), None)
+
+    def test_reclaim_expired_releases_stuck_claims(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = FileTaskStore(temp_dir, lease_seconds=30)
+            task = WorkerTask(
+                task_id="task-plan-012",
+                thread_id="prep-weekly",
+                worker_id="planner",
+                task_type="plan",
+                payload={"items": ["count stock"]},
+                requires=("plan",),
+                effects=(),
+            )
+            store.enqueue(task)
+            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+            receipt = store.claim("planner", now=now)
+            self.assertIsNotNone(receipt)
+            reclaimed = store.reclaim_expired(now=now + timedelta(seconds=31))
+            record = store.get("task-plan-012")
+
+            self.assertEqual(len(reclaimed), 1)
+            self.assertEqual(record.status, "pending")
+            self.assertIsNone(record.receipt_id)
+            self.assertEqual(store.list_receipts()[0].status, "released")
 
 
 if __name__ == "__main__":

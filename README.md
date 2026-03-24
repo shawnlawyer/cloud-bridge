@@ -59,6 +59,7 @@ python -m unittest
 - `Staff Phase 2`: durable local task store and explicit worker manifests
 - `Staff Phase 3`: bounded orchestration and first ingestion path
 - `Staff Phase 4`: explicit cloud export plan for the worker store
+- `Staff Phase 5`: bounded cloud fetch/import, lease reclaim, and manifest admission rules
 - `Persistent store`: explicit CLI/library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
@@ -139,12 +140,20 @@ cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
 cloud-bridge worker-store-sync --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge worker-process --store-root /tmp/cloud-bridge-store --worker planner
 cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --limit 4
+cloud-bridge worker-reclaim --store-root /tmp/cloud-bridge-store
 cloud-bridge worker-cloud-export --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge
+cloud-bridge worker-cloud-fetch --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --workers planner --queue-message-limit 2
+cloud-bridge worker-cloud-import --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --workers planner --queue-message-limit 2 --replay-dead-letters
 cloud-bridge worker-cloud-replay --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
 cloud-bridge health
 ```
+
+**Cloud Cost Guardrails**
+- No new managed services were added beyond the existing optional `S3` + `SQS` path.
+- Live cloud fetch/import is explicit CLI work only; there is no background polling.
+- The live fetch/import commands default to `queue_message_limit=2` and `task_object_limit=0` / `receipt_object_limit=0`, so they do not scan S3 unless you ask them to.
 
 **Caller Contract**
 - `/Users/shawnlawyer/cloud-bridge/CALLER_CONTRACT.md`

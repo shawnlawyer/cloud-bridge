@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 
@@ -7,6 +8,8 @@ from bridge.workers.cloud_transport import (
     CloudTransportConfig,
     apply_store_export_plan,
     build_store_export_plan,
+    fetch_cloud_payload,
+    import_store_from_cloud,
     replay_dead_letters,
     sync_store_from_cloud_payload,
 )
@@ -15,12 +18,40 @@ from bridge.workers.cloud_transport import (
 class FakeAwsCliRunner(AwsCliRunner):
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], str | None]] = []
+        self.s3_objects: dict[str, dict] = {}
+        self.queue_messages: dict[str, list[dict]] = {}
 
     def run(self, args: list[str], input_text: str | None = None) -> str:
         self.calls.append((args, input_text))
         if args[:3] == ["aws", "sqs", "get-queue-url"]:
-            return "https://example.com/queue/cloudbridge-planner.fifo"
-        return ""
+            queue_name = args[args.index("--queue-name") + 1]
+            return f"https://example.com/queue/{queue_name}"
+        if args[:3] == ["aws", "sqs", "send-message"]:
+            return ""
+        if args[:3] == ["aws", "sqs", "delete-message"]:
+            return ""
+        if args[:3] == ["aws", "sqs", "receive-message"]:
+            queue_url = args[args.index("--queue-url") + 1]
+            queue_name = queue_url.rsplit("/", 1)[-1]
+            batch_size = int(args[args.index("--max-number-of-messages") + 1])
+            queued = self.queue_messages.get(queue_name, [])
+            batch, remainder = queued[:batch_size], queued[batch_size:]
+            self.queue_messages[queue_name] = remainder
+            return json.dumps({"Messages": batch})
+        if args[:3] == ["aws", "s3api", "list-objects-v2"]:
+            prefix = args[args.index("--prefix") + 1]
+            limit = int(args[args.index("--max-keys") + 1])
+            keys = sorted(key for key in self.s3_objects if key.startswith(prefix))[:limit]
+            return json.dumps({"Contents": [{"Key": key} for key in keys]})
+        if args[:3] == ["aws", "s3", "cp"]:
+            source = args[3]
+            if source == "-":
+                return ""
+            if not source.startswith("s3://"):
+                raise AssertionError(f"unexpected s3 source: {source}")
+            key = source.split("/", 3)[3]
+            return json.dumps(self.s3_objects[key])
+        raise AssertionError(f"unexpected aws invocation: {args}")
 
 
 class TestWorkerCloudTransport(unittest.TestCase):
@@ -197,6 +228,212 @@ class TestWorkerCloudTransport(unittest.TestCase):
             self.assertEqual(replay_out["task_ids"], ["task-plan-402"])
             self.assertEqual(store.get("task-plan-402").status, "pending")
             self.assertEqual(store.get("task-plan-402").attempt, 0)
+
+    def test_fetch_cloud_payload_reads_s3_and_queue_sources(self):
+        runner = FakeAwsCliRunner()
+        runner.s3_objects = {
+            "tasks/planner/task-plan-501.json": {
+                "task": {
+                    "task_id": "task-plan-501",
+                    "thread_id": "prep-weekly",
+                    "worker_id": "planner",
+                    "task_type": "plan",
+                    "payload": {"items": ["count stock"]},
+                    "requires": ["plan"],
+                    "effects": [],
+                },
+                "status": "pending",
+                "attempt": 0,
+                "max_attempts": 3,
+                "claimed_by": None,
+                "receipt_id": None,
+                "last_error": None,
+                "result": None,
+            },
+            "receipts/planner/rcpt__task-plan-501__1.json": {
+                "receipt_id": "rcpt:task-plan-501:1",
+                "task_id": "task-plan-501",
+                "worker_id": "planner",
+                "attempt": 1,
+                "status": "open",
+                "lease_expires_at": "2026-01-01T00:05:00Z",
+            },
+        }
+        runner.queue_messages = {
+            "cloudbridge-planner.fifo": [
+                {
+                    "Body": json.dumps(
+                        {
+                            "task_id": "task-plan-501",
+                            "worker_id": "planner",
+                            "s3_uri": "s3://cloudbridge-bucket/tasks/planner/task-plan-501.json",
+                            "status": "pending",
+                        }
+                    ),
+                    "ReceiptHandle": "receipt-1",
+                    "Attributes": {
+                        "MessageGroupId": "prep-weekly",
+                        "MessageDeduplicationId": "task-plan-501",
+                    },
+                }
+            ],
+            "cloudbridge-planner-dlq.fifo": [
+                {
+                    "Body": json.dumps(
+                        {
+                            "task_id": "task-plan-502",
+                            "worker_id": "planner",
+                            "reason": "boom",
+                            "task": {
+                                "task": {
+                                    "task_id": "task-plan-502",
+                                    "thread_id": "prep-weekly",
+                                    "worker_id": "planner",
+                                    "task_type": "plan",
+                                    "payload": {"items": ["order produce"]},
+                                    "requires": ["plan"],
+                                    "effects": [],
+                                },
+                                "status": "failed",
+                                "attempt": 1,
+                                "max_attempts": 3,
+                                "claimed_by": None,
+                                "receipt_id": None,
+                                "last_error": "boom",
+                                "result": None,
+                            },
+                        }
+                    ),
+                    "ReceiptHandle": "receipt-2",
+                    "Attributes": {
+                        "MessageGroupId": "prep-weekly",
+                        "MessageDeduplicationId": "task-plan-502",
+                    },
+                }
+            ],
+        }
+
+        payload = fetch_cloud_payload(
+            CloudTransportConfig(
+                bucket="cloudbridge-bucket",
+                region="us-east-2",
+                queue_prefix="cloudbridge",
+            ),
+            runner=runner,
+            worker_ids=("planner",),
+            task_object_limit=0,
+            receipt_object_limit=1,
+            queue_message_limit=1,
+            include_dlq=True,
+        )
+
+        self.assertEqual(len(payload["objects"]), 2)
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(len(payload["dead_letters"]), 1)
+        self.assertEqual(payload["messages"][0]["receipt_handle"], "receipt-1")
+        self.assertEqual(payload["dead_letters"][0]["queue_name"], "cloudbridge-planner-dlq.fifo")
+
+    def test_import_store_from_cloud_syncs_and_replays_live_payload(self):
+        runner = FakeAwsCliRunner()
+        runner.s3_objects = {
+            "tasks/planner/task-plan-601.json": {
+                "task": {
+                    "task_id": "task-plan-601",
+                    "thread_id": "prep-weekly",
+                    "worker_id": "planner",
+                    "task_type": "plan",
+                    "payload": {"items": ["count stock"]},
+                    "requires": ["plan"],
+                    "effects": [],
+                },
+                "status": "pending",
+                "attempt": 0,
+                "max_attempts": 3,
+                "claimed_by": None,
+                "receipt_id": None,
+                "last_error": None,
+                "result": None,
+            }
+        }
+        runner.queue_messages = {
+            "cloudbridge-planner.fifo": [
+                {
+                    "Body": json.dumps(
+                        {
+                            "task_id": "task-plan-601",
+                            "worker_id": "planner",
+                            "s3_uri": "s3://cloudbridge-bucket/tasks/planner/task-plan-601.json",
+                            "status": "pending",
+                        }
+                    ),
+                    "ReceiptHandle": "receipt-3",
+                    "Attributes": {
+                        "MessageGroupId": "prep-weekly",
+                        "MessageDeduplicationId": "task-plan-601",
+                    },
+                }
+            ],
+            "cloudbridge-planner-dlq.fifo": [
+                {
+                    "Body": json.dumps(
+                        {
+                            "task_id": "task-plan-602",
+                            "worker_id": "planner",
+                            "reason": "boom",
+                            "task": {
+                                "task": {
+                                    "task_id": "task-plan-602",
+                                    "thread_id": "prep-weekly",
+                                    "worker_id": "planner",
+                                    "task_type": "plan",
+                                    "payload": {"items": ["order produce"]},
+                                    "requires": ["plan"],
+                                    "effects": [],
+                                },
+                                "status": "failed",
+                                "attempt": 1,
+                                "max_attempts": 3,
+                                "claimed_by": None,
+                                "receipt_id": None,
+                                "last_error": "boom",
+                                "result": None,
+                            },
+                        }
+                    ),
+                    "ReceiptHandle": "receipt-4",
+                    "Attributes": {
+                        "MessageGroupId": "prep-weekly",
+                        "MessageDeduplicationId": "task-plan-602",
+                    },
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = import_store_from_cloud(
+                temp_dir,
+                CloudTransportConfig(
+                    bucket="cloudbridge-bucket",
+                    region="us-east-2",
+                    queue_prefix="cloudbridge",
+                ),
+                runner=runner,
+                worker_ids=("planner",),
+                task_object_limit=0,
+                receipt_object_limit=0,
+                queue_message_limit=1,
+                include_dlq=True,
+                replay_dlq=True,
+                delete_fetched=True,
+            )
+            store = FileTaskStore(temp_dir)
+
+            self.assertEqual(store.get("task-plan-601").status, "pending")
+            self.assertEqual(store.get("task-plan-602").status, "pending")
+            self.assertEqual(out["replayed"]["task_ids"], ["task-plan-602"])
+            self.assertEqual(out["deleted"]["message_count"], 2)
+            delete_calls = [call for call, _ in runner.calls if call[:3] == ["aws", "sqs", "delete-message"]]
+            self.assertEqual(len(delete_calls), 2)
 
 
 if __name__ == "__main__":
