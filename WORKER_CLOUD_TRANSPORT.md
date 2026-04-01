@@ -9,6 +9,7 @@ The transport is explicit and bounded.
 - no background sync
 - no implicit network activity
 - no auto-export on enqueue or completion
+- disabled by default at the CLI layer unless `CLOUD_BRIDGE_ENABLE_CLOUD=1`
 
 ## Library
 

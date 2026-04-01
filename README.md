@@ -54,12 +54,14 @@ python -m unittest
 **Runtime**
 - `HTTP`: stateless request/response service
 - `CLI`: local deterministic wrapper
+- `Private hub default`: local filesystem first, cloud disabled unless explicitly enabled
 - `No background daemon`: no scheduler, no hidden loop lifecycle
 - `Staff Phase 1`: bounded local worker contract and runner
 - `Staff Phase 2`: durable local task store and explicit worker manifests
 - `Staff Phase 3`: bounded orchestration and first ingestion path
 - `Staff Phase 4`: explicit cloud export plan for the worker store
 - `Staff Phase 5`: bounded cloud fetch/import, lease reclaim, and manifest admission rules
+- `Staff Phase 6`: zero-cost local maintenance and cloud opt-in guardrails
 - `Persistent store`: explicit CLI/library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
@@ -68,11 +70,17 @@ Install API extras:
 pip install -e ".[api]"
 ```
 
-Run:
+Default local-only bind:
+```bash
+uvicorn bridge.api.app:app --host 127.0.0.1 --port 8080
+```
+
+Private LAN bind, only if you intentionally want other devices on your local network to reach it:
 ```bash
 uvicorn bridge.api.app:app --host 0.0.0.0 --port 8080
 ```
 
+Run:
 Endpoints:
 - `POST /route`
 - `POST /federate`
@@ -89,12 +97,23 @@ docker build -t cloud-bridge:0.1.2 .
 
 Run:
 ```bash
-docker run --rm -p 8080:8080 cloud-bridge:0.1.2
+docker run --rm \
+  -e CLOUD_BRIDGE_HOST=0.0.0.0 \
+  -p 127.0.0.1:8080:8080 \
+  cloud-bridge:0.1.2
 ```
 
 Health check:
 ```bash
 curl http://localhost:8080/health
+```
+
+Private LAN Docker example, only if you intentionally want access from your local network:
+```bash
+docker run --rm \
+  -e CLOUD_BRIDGE_HOST=0.0.0.0 \
+  -p <LAN_IP>:8080:8080 \
+  cloud-bridge:0.1.2
 ```
 
 Example `POST /route` body:
@@ -137,23 +156,33 @@ cloud-bridge worker-run < /Users/shawnlawyer/cloud-bridge/examples/worker_task.j
 cloud-bridge worker-manifests
 cloud-bridge worker-enqueue --store-root /tmp/cloud-bridge-store < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
 cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
+cloud-bridge worker-store-status --store-root /tmp/cloud-bridge-store
+cloud-bridge worker-store-maintain --store-root /tmp/cloud-bridge-store --keep-done 100 --keep-failed 50 --event-keep 1000
 cloud-bridge worker-store-sync --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge worker-process --store-root /tmp/cloud-bridge-store --worker planner
 cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --limit 4
 cloud-bridge worker-reclaim --store-root /tmp/cloud-bridge-store
-cloud-bridge worker-cloud-export --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge
-cloud-bridge worker-cloud-fetch --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --workers planner --queue-message-limit 2
-cloud-bridge worker-cloud-import --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --workers planner --queue-message-limit 2 --replay-dead-letters
 cloud-bridge worker-cloud-replay --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
 cloud-bridge health
 ```
 
-**Cloud Cost Guardrails**
-- No new managed services were added beyond the existing optional `S3` + `SQS` path.
-- Live cloud fetch/import is explicit CLI work only; there is no background polling.
-- The live fetch/import commands default to `queue_message_limit=2` and `task_object_limit=0` / `receipt_object_limit=0`, so they do not scan S3 unless you ask them to.
+**Zero-Cost Defaults**
+- Local filesystem is the default runtime.
+- Local maintenance commands keep the worker store bounded without paying for any service.
+- Cloud access is disabled by default.
+- To enable live AWS commands later, you must explicitly set `CLOUD_BRIDGE_ENABLE_CLOUD=1`.
+- Default HTTP examples bind locally first; LAN access is explicit.
+
+**Cloud Commands Are Opt-In**
+These commands stay available for later, but they are blocked unless `CLOUD_BRIDGE_ENABLE_CLOUD=1` is set:
+
+```bash
+cloud-bridge worker-cloud-export --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --execute
+cloud-bridge worker-cloud-fetch --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --workers planner --queue-message-limit 2
+cloud-bridge worker-cloud-import --store-root /tmp/cloud-bridge-store --bucket cloudbridge-bucket --region us-east-2 --queue-prefix cloudbridge --workers planner --queue-message-limit 2 --replay-dead-letters
+```
 
 **Caller Contract**
 - `/Users/shawnlawyer/cloud-bridge/CALLER_CONTRACT.md`

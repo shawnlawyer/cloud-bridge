@@ -12,4 +12,7 @@ RUN pip install --upgrade pip && \
 
 EXPOSE 8080
 
-CMD ["uvicorn", "bridge.api.app:app", "--host", "0.0.0.0", "--port", "8080"]
+ENV CLOUD_BRIDGE_HOST=127.0.0.1
+ENV CLOUD_BRIDGE_PORT=8080
+
+CMD ["sh", "-c", "uvicorn bridge.api.app:app --host ${CLOUD_BRIDGE_HOST} --port ${CLOUD_BRIDGE_PORT}"]

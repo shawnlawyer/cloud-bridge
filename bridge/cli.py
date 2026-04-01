@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -19,6 +20,7 @@ from bridge.workers import (
     WorkerTask,
     build_default_runner,
     build_store_export_plan,
+    describe_store,
     dispatch_tasks,
     enqueue_task,
     fetch_cloud_payload,
@@ -119,6 +121,17 @@ def run_worker_store_list(request: dict) -> dict:
     return {"tasks": tasks, "metrics": snapshot()}
 
 
+def run_worker_store_status(request: dict) -> dict:
+    store_root = request.get("store_root")
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+
+    out = describe_store(store_root)
+    record("worker_store_status")
+    out["metrics"] = snapshot()
+    return out
+
+
 def run_worker_process(request: dict) -> dict:
     store_root = request.get("store_root")
     worker_id = request.get("worker_id")
@@ -189,6 +202,40 @@ def run_worker_reclaim(request: dict) -> dict:
     }
 
 
+def run_worker_store_maintain(request: dict) -> dict:
+    store_root = request.get("store_root")
+    keep_done = request.get("keep_done", 100)
+    keep_failed = request.get("keep_failed", 50)
+    event_keep = request.get("event_keep", 1000)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(keep_done, int) or keep_done < 0:
+        raise ValueError("keep_done must be >= 0")
+    if not isinstance(keep_failed, int) or keep_failed < 0:
+        raise ValueError("keep_failed must be >= 0")
+    if not isinstance(event_keep, int) or event_keep < 0:
+        raise ValueError("event_keep must be >= 0")
+
+    store = FileTaskStore(store_root)
+    reclaimed = store.reclaim_expired()
+    pruned = store.prune(keep_done=keep_done, keep_failed=keep_failed, event_keep=event_keep)
+    summary = store.summarize()
+    events = ["worker_store_maintain"]
+    if reclaimed:
+        events.extend(["worker_reclaim_task"] * len(reclaimed))
+    if pruned["deleted_task_ids"]:
+        events.extend(["worker_store_prune_task"] * len(pruned["deleted_task_ids"]))
+    record_many(events)
+    return {
+        "reclaimed_count": len(reclaimed),
+        "reclaimed": [record_data.to_dict() for record_data in reclaimed],
+        "pruned": pruned,
+        "summary": summary,
+        "metrics": snapshot(),
+    }
+
+
 def run_worker_cloud_export(request: dict) -> dict:
     store_root = request.get("store_root")
     bucket = request.get("bucket")
@@ -206,6 +253,8 @@ def run_worker_cloud_export(request: dict) -> dict:
         raise ValueError("queue_prefix must be a non-empty string")
     if not isinstance(execute, bool):
         raise ValueError("execute must be a boolean")
+    if execute:
+        _require_cloud_enabled()
 
     config = CloudTransportConfig(bucket=bucket, region=region, queue_prefix=queue_prefix)
     plan = build_store_export_plan(store_root, config)
@@ -220,6 +269,7 @@ def run_worker_cloud_export(request: dict) -> dict:
 
 
 def run_worker_cloud_fetch(request: dict) -> dict:
+    _require_cloud_enabled()
     bucket = request.get("bucket")
     region = request.get("region")
     queue_prefix = request.get("queue_prefix")
@@ -285,6 +335,7 @@ def run_worker_store_sync(request: dict) -> dict:
 
 
 def run_worker_cloud_import(request: dict) -> dict:
+    _require_cloud_enabled()
     store_root = request.get("store_root")
     bucket = request.get("bucket")
     region = request.get("region")
@@ -396,6 +447,15 @@ def _format_error(exc: Exception) -> str:
     return str(exc)
 
 
+def _cloud_enabled() -> bool:
+    return os.environ.get("CLOUD_BRIDGE_ENABLE_CLOUD", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_cloud_enabled() -> None:
+    if not _cloud_enabled():
+        raise RuntimeError("cloud access is disabled by default; set CLOUD_BRIDGE_ENABLE_CLOUD=1 to enable it")
+
+
 def _parse_worker_ids(value: str | None) -> list[str] | None:
     if value is None:
         return None
@@ -418,6 +478,13 @@ def main(argv: list[str] | None = None) -> int:
     worker_enqueue_parser.add_argument("--max-attempts", type=int, default=3)
     worker_store_list_parser = sub.add_parser("worker-store-list", help="List tasks in a local worker store")
     worker_store_list_parser.add_argument("--store-root", required=True)
+    worker_store_status_parser = sub.add_parser("worker-store-status", help="Show local worker store counts and blocked tasks")
+    worker_store_status_parser.add_argument("--store-root", required=True)
+    worker_store_maintain_parser = sub.add_parser("worker-store-maintain", help="Reclaim expired tasks and prune local store state")
+    worker_store_maintain_parser.add_argument("--store-root", required=True)
+    worker_store_maintain_parser.add_argument("--keep-done", type=int, default=100)
+    worker_store_maintain_parser.add_argument("--keep-failed", type=int, default=50)
+    worker_store_maintain_parser.add_argument("--event-keep", type=int, default=1000)
     worker_store_sync_parser = sub.add_parser("worker-store-sync", help="Sync task and receipt records from a cloud export payload")
     worker_store_sync_parser.add_argument("--store-root", required=True)
     worker_store_sync_parser.add_argument("--input", required=True)
@@ -492,6 +559,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "worker-store-list":
             _emit(run_worker_store_list({"store_root": args.store_root}))
+        elif args.command == "worker-store-status":
+            _emit(run_worker_store_status({"store_root": args.store_root}))
+        elif args.command == "worker-store-maintain":
+            _emit(
+                run_worker_store_maintain(
+                    {
+                        "store_root": args.store_root,
+                        "keep_done": args.keep_done,
+                        "keep_failed": args.keep_failed,
+                        "event_keep": args.event_keep,
+                    }
+                )
+            )
         elif args.command == "worker-store-sync":
             _emit(
                 run_worker_store_sync(

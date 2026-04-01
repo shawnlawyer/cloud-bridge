@@ -20,6 +20,13 @@ def list_manifests() -> tuple[dict, ...]:
     return tuple(manifest.to_dict() for manifest in list_default_manifests())
 
 
+def describe_store(store_root: str | Path) -> dict:
+    store = FileTaskStore(store_root)
+    summary = store.summarize()
+    summary["blocked"] = _list_blocked_tasks(store)
+    return summary
+
+
 def process_next_task(store_root: str | Path, worker_id: str) -> dict:
     store = FileTaskStore(store_root)
     reclaimed = store.reclaim_expired()

@@ -255,6 +255,26 @@ CLI surface:
 - `cloud-bridge worker-cloud-fetch --bucket <bucket> --region <region> --queue-prefix <prefix>`
 - `cloud-bridge worker-cloud-import --store-root <path> --bucket <bucket> --region <region> --queue-prefix <prefix>`
 
+## Phase 6 Zero-Cost Local Maintenance
+
+Phase 6 keeps the private hub lean without introducing any paid dependency.
+
+Capabilities:
+
+- local store summaries
+- bounded local pruning for `done` and `failed` tasks
+- bounded event-log compaction
+- cloud CLI commands blocked by default unless explicitly enabled
+
+CLI surface:
+
+- `cloud-bridge worker-store-status --store-root <path>`
+- `cloud-bridge worker-store-maintain --store-root <path> --keep-done <n> --keep-failed <n> --event-keep <n>`
+
+Cloud guardrail:
+
+- live cloud commands require `CLOUD_BRIDGE_ENABLE_CLOUD=1`
+
 ## Failure Model
 
 Fail-closed behavior applies at two levels.

@@ -363,6 +363,55 @@ class FileTaskStore:
             "receipt_ids": synced_receipts,
         }
 
+    def summarize(self, now: datetime | None = None) -> dict:
+        active_now = now or _utc_now()
+        task_counts = {status: 0 for status in sorted(_TASK_STATUS_VALUES)}
+        receipt_counts = {status: 0 for status in sorted(_RECEIPT_STATUS_VALUES)}
+        expired_receipts = []
+
+        tasks = self.list_tasks()
+        receipts = self.list_receipts()
+        for record in tasks:
+            task_counts[record.status] += 1
+        for receipt in receipts:
+            receipt_counts[receipt.status] += 1
+            if receipt.is_expired(active_now):
+                expired_receipts.append(receipt.receipt_id)
+
+        event_count = 0
+        if self.events_path.exists():
+            with self.events_path.open("r", encoding="utf-8") as handle:
+                event_count = sum(1 for _ in handle)
+
+        return {
+            "task_count": len(tasks),
+            "task_counts": task_counts,
+            "receipt_count": len(receipts),
+            "receipt_counts": receipt_counts,
+            "expired_receipt_ids": expired_receipts,
+            "event_count": event_count,
+        }
+
+    def prune(self, keep_done: int = 100, keep_failed: int = 50, event_keep: int = 1000) -> dict:
+        for name, value in (("keep_done", keep_done), ("keep_failed", keep_failed), ("event_keep", event_keep)):
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be >= 0")
+
+        deleted_task_ids = []
+        deleted_receipt_ids = []
+
+        deleted_task_ids.extend(self._prune_task_status("done", keep_done))
+        deleted_task_ids.extend(self._prune_task_status("failed", keep_failed))
+
+        deleted_receipt_ids.extend(self._delete_receipts_for_tasks(set(deleted_task_ids)))
+        event_count = self._compact_events(event_keep)
+
+        return {
+            "deleted_task_ids": deleted_task_ids,
+            "deleted_receipt_ids": deleted_receipt_ids,
+            "event_count": event_count,
+        }
+
     def _task_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id.replace(':', '__')}.json"
 
@@ -380,6 +429,50 @@ class FileTaskStore:
 
     def _write_receipt(self, receipt: ReceiptRecord) -> None:
         _write_json(self._receipt_path(receipt.receipt_id), receipt.to_dict())
+
+    def _prune_task_status(self, status: str, keep: int) -> list[str]:
+        matches = []
+        for path in self.tasks_dir.glob("*.json"):
+            record = TaskRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            if record.status == status:
+                matches.append((path.stat().st_mtime_ns, record, path))
+        matches.sort(key=lambda item: item[0], reverse=True)
+
+        deleted = []
+        for _, record, path in matches[keep:]:
+            path.unlink(missing_ok=True)
+            deleted.append(record.task.task_id)
+            _append_jsonl(
+                self.events_path,
+                {"event": "pruned_task", "task_id": record.task.task_id, "status": record.status},
+            )
+        return deleted
+
+    def _delete_receipts_for_tasks(self, task_ids: set[str]) -> list[str]:
+        if not task_ids:
+            return []
+        deleted = []
+        for path in self.receipts_dir.glob("*.json"):
+            receipt = ReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            if receipt.task_id not in task_ids:
+                continue
+            path.unlink(missing_ok=True)
+            deleted.append(receipt.receipt_id)
+            _append_jsonl(
+                self.events_path,
+                {"event": "pruned_receipt", "receipt_id": receipt.receipt_id, "task_id": receipt.task_id},
+            )
+        return deleted
+
+    def _compact_events(self, keep: int) -> int:
+        if not self.events_path.exists():
+            return 0
+
+        with self.events_path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+        kept_lines = lines[-keep:] if keep else []
+        self.events_path.write_text("".join(kept_lines), encoding="utf-8")
+        return len(kept_lines)
 
 
 def run_next_task(store: FileTaskStore, runner: LocalWorkerRunner, worker_id: str) -> WorkerResult | None:

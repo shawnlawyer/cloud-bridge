@@ -129,6 +129,41 @@ class TestWorkerStore(unittest.TestCase):
             self.assertIsNone(record.receipt_id)
             self.assertEqual(store.list_receipts()[0].status, "released")
 
+    def test_prune_removes_old_terminal_tasks_and_receipts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = FileTaskStore(temp_dir)
+            runner = build_default_runner()
+
+            first = WorkerTask(
+                task_id="task-plan-013",
+                thread_id="prep-weekly",
+                worker_id="planner",
+                task_type="plan",
+                payload={"items": ["count stock"]},
+                requires=("plan",),
+                effects=(),
+            )
+            second = WorkerTask(
+                task_id="task-plan-014",
+                thread_id="prep-weekly",
+                worker_id="planner",
+                task_type="plan",
+                payload={"items": ["order produce"]},
+                requires=("plan",),
+                effects=(),
+            )
+            store.enqueue(first)
+            run_next_task(store, runner, "planner")
+            store.enqueue(second)
+            run_next_task(store, runner, "planner")
+
+            out = store.prune(keep_done=1, keep_failed=0, event_keep=5)
+
+            self.assertEqual(out["deleted_task_ids"], ["task-plan-013"])
+            self.assertEqual(store.get("task-plan-014").status, "done")
+            self.assertEqual(len(store.list_receipts()), 1)
+            self.assertLessEqual(store.summarize()["event_count"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()
