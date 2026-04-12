@@ -16,12 +16,15 @@ from bridge.cli import (
     run_research_writing_status,
     run_worker_artifact_list,
     run_worker_dispatch,
+    run_worker_inbox,
+    run_worker_reclaim,
+    run_worker_store_maintain,
     run_worker_store_status,
     run_route,
     run_worker,
     run_worker_manifests,
 )
-from bridge.operator import render_operator_console, render_project_board, render_project_detail
+from bridge.operator import render_inbox_page, render_operator_console, render_project_board, render_project_detail
 from bridge.workers import FileTaskStore
 
 app = FastAPI(title="Cloud Bridge API", version="0.1.1")
@@ -75,6 +78,49 @@ def operator_console_endpoint() -> HTMLResponse:
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return HTMLResponse(render_operator_console(state))
+
+
+@app.get("/inbox/state")
+def inbox_state_endpoint(task_limit: int = Query(default=40, ge=1, le=200)) -> dict:
+    try:
+        return run_worker_inbox({"store_root": _operator_store_root(), "task_limit": task_limit})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/inbox", response_class=HTMLResponse)
+def inbox_view_endpoint(task_limit: int = Query(default=40, ge=1, le=200)) -> HTMLResponse:
+    try:
+        state = run_worker_inbox({"store_root": _operator_store_root(), "task_limit": task_limit})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return HTMLResponse(render_inbox_page(state))
+
+
+@app.post("/inbox/dispatch")
+def inbox_dispatch_endpoint(limit: int = Query(default=4, ge=1, le=32), thread_id: str | None = None) -> dict:
+    try:
+        return run_worker_dispatch(
+            {"store_root": _operator_store_root(), "limit": limit, "thread_id": thread_id}
+        )
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/inbox/reclaim")
+def inbox_reclaim_endpoint() -> dict:
+    try:
+        return run_worker_reclaim({"store_root": _operator_store_root()})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/inbox/maintain")
+def inbox_maintain_endpoint() -> dict:
+    try:
+        return run_worker_store_maintain({"store_root": _operator_store_root()})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/projects/research-writing")

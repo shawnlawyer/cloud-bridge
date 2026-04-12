@@ -90,6 +90,11 @@ Endpoints:
 - `GET /worker/manifests`
 - `GET /operator/state`
 - `GET /operator/console`
+- `GET /inbox/state`
+- `GET /inbox`
+- `POST /inbox/dispatch`
+- `POST /inbox/reclaim`
+- `POST /inbox/maintain`
 - `GET /projects/research-writing`
 - `GET /projects/research-writing/board`
 - `POST /projects/research-writing/bootstrap`
@@ -112,6 +117,7 @@ uvicorn bridge.api.app:app --host 127.0.0.1 --port 8080
 Then open:
 - `http://127.0.0.1:8080/operator/console`
 - `http://<LAN_IP>:8080/operator/console`
+- `http://<LAN_IP>:8080/inbox`
 - `http://<LAN_IP>:8080/projects/research-writing/board`
 
 **Docker**
@@ -182,6 +188,7 @@ cloud-bridge worker-manifests
 cloud-bridge worker-enqueue --store-root /tmp/cloud-bridge-store < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
 cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
 cloud-bridge worker-store-status --store-root /tmp/cloud-bridge-store --event-limit 20
+cloud-bridge worker-inbox --store-root /tmp/cloud-bridge-store --task-limit 40
 cloud-bridge worker-store-maintain --store-root /tmp/cloud-bridge-store --keep-done 100 --keep-failed 50 --event-keep 1000
 cloud-bridge worker-artifact-add --store-root /tmp/cloud-bridge-store --owner-id workflow:notes --input ./notes.md
 printf '# quick note\n' | cloud-bridge worker-artifact-add --store-root /tmp/cloud-bridge-store --owner-id workflow:notes --input - --name quick-note.md
@@ -220,6 +227,9 @@ cloud-bridge health
 - `research-writing-assemble` writes a markdown artifact that combines the completed outputs into a single working draft.
 
 **Browser-First Local Use**
+- `/inbox` is the work queue page: what is ready, blocked, failed, or stuck right now.
+- The inbox can run a bounded global dispatch, reclaim expired leases, or maintain the store from the browser.
+- The inbox can also dispatch one thread at a time so one project does not trample another.
 - `/projects/research-writing/board` is a lightweight intake screen for new projects.
 - The board can start a project from newline-separated source paths or a server-local folder path.
 - Each project page can run a bounded dispatch and assemble a fresh draft from the browser.

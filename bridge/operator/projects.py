@@ -48,7 +48,7 @@ def render_project_board(workflows: list[dict]) -> str:
 </head>
 <body>
   <h1>Cloud Bridge Projects</h1>
-  <p class=\"muted\">Zero-cost local intake for research/writing work on your private hub.</p>
+  <p class=\"muted\">Zero-cost local intake for research/writing work on your private hub. <a href=\"/inbox\">Open inbox</a></p>
   <div class=\"grid\">
     <section class=\"card\">
       <h2>New Project</h2>

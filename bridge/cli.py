@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from bridge.core.envelope import Envelope
+from bridge.inbox import build_inbox_state
 from bridge.core.routing import route
 from bridge.federation.handshake import handshake
 from bridge.federation.registry import AgentRecord, Registry
@@ -138,6 +139,20 @@ def run_worker_store_status(request: dict) -> dict:
 
     out = describe_store(store_root, event_limit=event_limit)
     record("worker_store_status")
+    out["metrics"] = snapshot()
+    return out
+
+
+def run_worker_inbox(request: dict) -> dict:
+    store_root = request.get("store_root")
+    task_limit = request.get("task_limit", 40)
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(task_limit, int) or task_limit <= 0:
+        raise ValueError("task_limit must be a positive integer")
+
+    out = build_inbox_state(store_root, task_limit=task_limit)
+    record("worker_inbox")
     out["metrics"] = snapshot()
     return out
 
@@ -678,6 +693,9 @@ def main(argv: list[str] | None = None) -> int:
     worker_store_status_parser = sub.add_parser("worker-store-status", help="Show local worker store counts and blocked tasks")
     worker_store_status_parser.add_argument("--store-root", required=True)
     worker_store_status_parser.add_argument("--event-limit", type=int, default=20)
+    worker_inbox_parser = sub.add_parser("worker-inbox", help="Show the current local inbox/work queue")
+    worker_inbox_parser.add_argument("--store-root", required=True)
+    worker_inbox_parser.add_argument("--task-limit", type=int, default=40)
     worker_store_maintain_parser = sub.add_parser("worker-store-maintain", help="Reclaim expired tasks and prune local store state")
     worker_store_maintain_parser.add_argument("--store-root", required=True)
     worker_store_maintain_parser.add_argument("--keep-done", type=int, default=100)
@@ -812,6 +830,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit(run_worker_store_list({"store_root": args.store_root}))
         elif args.command == "worker-store-status":
             _emit(run_worker_store_status({"store_root": args.store_root, "event_limit": args.event_limit}))
+        elif args.command == "worker-inbox":
+            _emit(run_worker_inbox({"store_root": args.store_root, "task_limit": args.task_limit}))
         elif args.command == "worker-store-maintain":
             _emit(
                 run_worker_store_maintain(

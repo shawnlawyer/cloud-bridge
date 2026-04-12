@@ -1,6 +1,6 @@
 import unittest
 
-from bridge.operator import render_operator_console, render_project_board, render_project_detail
+from bridge.operator import render_inbox_page, render_operator_console, render_project_board, render_project_detail
 
 
 class TestOperatorConsole(unittest.TestCase):
@@ -77,6 +77,52 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("Open project", board)
         self.assertIn("Run Dispatch", detail)
         self.assertIn("Steward approved=True", detail)
+
+    def test_render_inbox_page_includes_actions_and_steward_label(self):
+        inbox = render_inbox_page(
+            {
+                "summary": {
+                    "ready_count": 1,
+                    "blocked_count": 1,
+                    "failed_count": 1,
+                    "claimed_count": 1,
+                    "expired_count": 1,
+                    "thread_count": 1,
+                },
+                "threads": [
+                    {
+                        "thread_id": "research:alpha",
+                        "title": "Alpha",
+                        "project_url": "/projects/research-writing/research:alpha/view",
+                        "ready_count": 1,
+                        "blocked_count": 1,
+                        "failed_count": 1,
+                        "claimed_count": 1,
+                        "task_counts": {"pending": 2, "failed": 1, "claimed": 1},
+                    }
+                ],
+                "ready_tasks": [
+                    {
+                        "thread_title": "Alpha",
+                        "project_url": "/projects/research-writing/research:alpha/view",
+                        "worker_label": "Steward",
+                        "task_type": "review",
+                        "status": "pending",
+                        "attempt": 0,
+                        "max_attempts": 3,
+                    }
+                ],
+                "blocked_tasks": [],
+                "failed_tasks": [],
+                "claimed_tasks": [],
+            }
+        )
+
+        self.assertIn("Cloud Bridge Inbox", inbox)
+        self.assertIn("Run Next 4", inbox)
+        self.assertIn("Reclaim Expired", inbox)
+        self.assertIn("Maintain Store", inbox)
+        self.assertIn("Steward", inbox)
 
 
 if __name__ == "__main__":

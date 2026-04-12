@@ -59,7 +59,7 @@ def render_operator_console(state: dict) -> str:
 </head>
 <body>
   <h1>Cloud Bridge Operator Console</h1>
-  <p class=\"muted\">Private hub state on the local store. <a href=\"/projects/research-writing/board\">Open projects</a></p>
+  <p class=\"muted\">Private hub state on the local store. <a href=\"/inbox\">Open inbox</a> · <a href=\"/projects/research-writing/board\">Open projects</a></p>
   <div class=\"grid\">
     <section class=\"card\">
       <h2>Store Summary</h2>
