@@ -62,6 +62,7 @@ python -m unittest
 - `Staff Phase 4`: explicit cloud export plan for the worker store
 - `Staff Phase 5`: bounded cloud fetch/import, lease reclaim, and manifest admission rules
 - `Staff Phase 6`: zero-cost local maintenance and cloud opt-in guardrails
+- `Staff Phase 7`: private LAN operator console, local artifact storage, and bounded research/writing workflow
 - `Persistent store`: explicit CLI/library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
@@ -86,8 +87,20 @@ Endpoints:
 - `POST /federate`
 - `POST /worker/run`
 - `GET /worker/manifests`
+- `GET /operator/state`
+- `GET /operator/console`
 - `GET /metrics`
 - `GET /health`
+
+Operator console with an explicit local store root:
+```bash
+CLOUD_BRIDGE_STORE_ROOT=/tmp/cloud-bridge-store \
+uvicorn bridge.api.app:app --host 127.0.0.1 --port 8080
+```
+
+Then open:
+- `http://127.0.0.1:8080/operator/console`
+- `http://<LAN_IP>:8080/operator/console`
 
 **Docker**
 Build:
@@ -156,17 +169,37 @@ cloud-bridge worker-run < /Users/shawnlawyer/cloud-bridge/examples/worker_task.j
 cloud-bridge worker-manifests
 cloud-bridge worker-enqueue --store-root /tmp/cloud-bridge-store < /Users/shawnlawyer/cloud-bridge/examples/worker_task.json
 cloud-bridge worker-store-list --store-root /tmp/cloud-bridge-store
-cloud-bridge worker-store-status --store-root /tmp/cloud-bridge-store
+cloud-bridge worker-store-status --store-root /tmp/cloud-bridge-store --event-limit 20
 cloud-bridge worker-store-maintain --store-root /tmp/cloud-bridge-store --keep-done 100 --keep-failed 50 --event-keep 1000
+cloud-bridge worker-artifact-add --store-root /tmp/cloud-bridge-store --owner-id workflow:notes --input ./notes.md
+printf '# quick note\n' | cloud-bridge worker-artifact-add --store-root /tmp/cloud-bridge-store --owner-id workflow:notes --input - --name quick-note.md
+cloud-bridge worker-artifact-list --store-root /tmp/cloud-bridge-store --owner-id workflow:notes
 cloud-bridge worker-store-sync --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge worker-process --store-root /tmp/cloud-bridge-store --worker planner
 cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --limit 4
 cloud-bridge worker-reclaim --store-root /tmp/cloud-bridge-store
 cloud-bridge worker-cloud-replay --store-root /tmp/cloud-bridge-store --input export.json
+cloud-bridge research-writing-bootstrap --store-root /tmp/cloud-bridge-store --title "Local Hub Primer" --objective "Explain the private hub" --source ./notes/source.md --constraint "local only" --constraint "zero cost"
+cloud-bridge research-writing-status --store-root /tmp/cloud-bridge-store --thread-id research:local-hub-primer
+cloud-bridge research-writing-assemble --store-root /tmp/cloud-bridge-store --thread-id research:local-hub-primer
 cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
 cloud-bridge health
 ```
+
+**Local Artifact Store**
+- Artifacts live inside the worker store under `artifacts/files` and `artifacts/meta`.
+- Each artifact records owner, media type, size, hash, and on-disk path.
+- The artifact store stays zero-cost and local until you explicitly opt into cloud commands later.
+
+**Bounded Research/Writing Workflow**
+- `research-writing-bootstrap` imports local sources, writes a workflow packet, and enqueues four bounded tasks:
+  - `guardian` for constraints/risk review
+  - `archivist` for source digest
+  - `planner` for ordered steps
+  - `scribe` for a first-pass draft
+- `worker-dispatch --limit 4` can process the whole workflow in one bounded cycle.
+- `research-writing-assemble` writes a markdown artifact that combines the completed outputs into a single working draft.
 
 **Zero-Cost Defaults**
 - Local filesystem is the default runtime.

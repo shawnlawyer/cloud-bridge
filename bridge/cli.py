@@ -31,6 +31,11 @@ from bridge.workers import (
     process_next_task,
     sync_store_from_cloud_payload,
 )
+from bridge.workflows import (
+    assemble_research_writing,
+    bootstrap_research_writing,
+    describe_research_writing,
+)
 
 
 def run_route(request: dict) -> dict:
@@ -123,10 +128,13 @@ def run_worker_store_list(request: dict) -> dict:
 
 def run_worker_store_status(request: dict) -> dict:
     store_root = request.get("store_root")
+    event_limit = request.get("event_limit", 20)
     if not isinstance(store_root, str) or not store_root:
         raise ValueError("store_root must be a non-empty string")
+    if not isinstance(event_limit, int) or event_limit < 0:
+        raise ValueError("event_limit must be >= 0")
 
-    out = describe_store(store_root)
+    out = describe_store(store_root, event_limit=event_limit)
     record("worker_store_status")
     out["metrics"] = snapshot()
     return out
@@ -234,6 +242,129 @@ def run_worker_store_maintain(request: dict) -> dict:
         "summary": summary,
         "metrics": snapshot(),
     }
+
+
+def run_worker_artifact_add(request: dict) -> dict:
+    store_root = request.get("store_root")
+    owner_id = request.get("owner_id")
+    input_path = request.get("input_path")
+    content = request.get("content")
+    name = request.get("name")
+    media_type = request.get("media_type")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(owner_id, str) or not owner_id:
+        raise ValueError("owner_id must be a non-empty string")
+    if input_path is None and content is None:
+        raise ValueError("input_path or content is required")
+    if input_path is not None and content is not None:
+        raise ValueError("provide input_path or content, not both")
+    if name is not None and (not isinstance(name, str) or not name):
+        raise ValueError("name must be a non-empty string when provided")
+    if media_type is not None and (not isinstance(media_type, str) or not media_type):
+        raise ValueError("media_type must be a non-empty string when provided")
+
+    store = FileTaskStore(store_root)
+    if input_path is not None:
+        if not isinstance(input_path, str) or not input_path:
+            raise ValueError("input_path must be a non-empty string")
+        artifact = store.copy_artifact(owner_id, input_path, name=name, media_type=media_type)
+    else:
+        if not isinstance(content, str):
+            raise TypeError("content must be a string")
+        if name is None:
+            raise ValueError("name is required when adding inline content")
+        artifact = store.write_artifact(owner_id, name, content, media_type=media_type or "text/plain")
+
+    record("worker_artifact_add")
+    return {"artifact": artifact.to_dict(), "metrics": snapshot()}
+
+
+def run_worker_artifact_list(request: dict) -> dict:
+    store_root = request.get("store_root")
+    owner_id = request.get("owner_id")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if owner_id is not None and (not isinstance(owner_id, str) or not owner_id):
+        raise ValueError("owner_id must be a non-empty string when provided")
+
+    store = FileTaskStore(store_root)
+    artifacts = [artifact.to_dict() for artifact in store.list_artifacts(owner_id=owner_id)]
+    record("worker_artifact_list")
+    return {"artifacts": artifacts, "metrics": snapshot()}
+
+
+def run_research_writing_bootstrap(request: dict) -> dict:
+    store_root = request.get("store_root")
+    title = request.get("title")
+    objective = request.get("objective")
+    source_paths = request.get("source_paths", [])
+    constraints = request.get("constraints", [])
+    thread_id = request.get("thread_id")
+    max_attempts = request.get("max_attempts", 3)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(title, str) or not title:
+        raise ValueError("title must be a non-empty string")
+    if not isinstance(objective, str) or not objective:
+        raise ValueError("objective must be a non-empty string")
+    if not isinstance(source_paths, list) or not all(isinstance(path, str) and path for path in source_paths):
+        raise ValueError("source_paths must be a list of non-empty strings")
+    if not isinstance(constraints, list) or not all(isinstance(item, str) and item for item in constraints):
+        raise ValueError("constraints must be a list of non-empty strings")
+    if thread_id is not None and (not isinstance(thread_id, str) or not thread_id):
+        raise ValueError("thread_id must be a non-empty string when provided")
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("max_attempts must be a positive integer")
+
+    out = bootstrap_research_writing(
+        store_root,
+        title=title,
+        objective=objective,
+        source_paths=source_paths,
+        constraints=constraints,
+        thread_id=thread_id,
+        max_attempts=max_attempts,
+    )
+    record("research_writing_bootstrap")
+    out["metrics"] = snapshot()
+    return out
+
+
+def run_research_writing_status(request: dict) -> dict:
+    store_root = request.get("store_root")
+    thread_id = request.get("thread_id")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("thread_id must be a non-empty string")
+
+    out = describe_research_writing(store_root, thread_id)
+    record("research_writing_status")
+    out["metrics"] = snapshot()
+    return out
+
+
+def run_research_writing_assemble(request: dict) -> dict:
+    store_root = request.get("store_root")
+    thread_id = request.get("thread_id")
+    name = request.get("name")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("thread_id must be a non-empty string")
+    if name is not None and (not isinstance(name, str) or not name):
+        raise ValueError("name must be a non-empty string when provided")
+
+    out = assemble_research_writing(store_root, thread_id, name=name)
+    record("research_writing_assemble")
+    out["metrics"] = snapshot()
+    return out
 
 
 def run_worker_cloud_export(request: dict) -> dict:
@@ -480,11 +611,21 @@ def main(argv: list[str] | None = None) -> int:
     worker_store_list_parser.add_argument("--store-root", required=True)
     worker_store_status_parser = sub.add_parser("worker-store-status", help="Show local worker store counts and blocked tasks")
     worker_store_status_parser.add_argument("--store-root", required=True)
+    worker_store_status_parser.add_argument("--event-limit", type=int, default=20)
     worker_store_maintain_parser = sub.add_parser("worker-store-maintain", help="Reclaim expired tasks and prune local store state")
     worker_store_maintain_parser.add_argument("--store-root", required=True)
     worker_store_maintain_parser.add_argument("--keep-done", type=int, default=100)
     worker_store_maintain_parser.add_argument("--keep-failed", type=int, default=50)
     worker_store_maintain_parser.add_argument("--event-keep", type=int, default=1000)
+    worker_artifact_add_parser = sub.add_parser("worker-artifact-add", help="Add a local artifact to the worker store")
+    worker_artifact_add_parser.add_argument("--store-root", required=True)
+    worker_artifact_add_parser.add_argument("--owner-id", required=True)
+    worker_artifact_add_parser.add_argument("--input", required=True, help="Path to a local file or - for stdin")
+    worker_artifact_add_parser.add_argument("--name")
+    worker_artifact_add_parser.add_argument("--media-type")
+    worker_artifact_list_parser = sub.add_parser("worker-artifact-list", help="List local artifacts in the worker store")
+    worker_artifact_list_parser.add_argument("--store-root", required=True)
+    worker_artifact_list_parser.add_argument("--owner-id")
     worker_store_sync_parser = sub.add_parser("worker-store-sync", help="Sync task and receipt records from a cloud export payload")
     worker_store_sync_parser.add_argument("--store-root", required=True)
     worker_store_sync_parser.add_argument("--input", required=True)
@@ -528,6 +669,30 @@ def main(argv: list[str] | None = None) -> int:
     worker_cloud_replay_parser = sub.add_parser("worker-cloud-replay", help="Replay dead-letter tasks from a cloud export payload")
     worker_cloud_replay_parser.add_argument("--store-root", required=True)
     worker_cloud_replay_parser.add_argument("--input", required=True)
+    research_bootstrap_parser = sub.add_parser(
+        "research-writing-bootstrap",
+        help="Seed a bounded research/writing workflow into the local worker store",
+    )
+    research_bootstrap_parser.add_argument("--store-root", required=True)
+    research_bootstrap_parser.add_argument("--title", required=True)
+    research_bootstrap_parser.add_argument("--objective", required=True)
+    research_bootstrap_parser.add_argument("--source", action="append", default=[])
+    research_bootstrap_parser.add_argument("--constraint", action="append", default=[])
+    research_bootstrap_parser.add_argument("--thread-id")
+    research_bootstrap_parser.add_argument("--max-attempts", type=int, default=3)
+    research_status_parser = sub.add_parser(
+        "research-writing-status",
+        help="Show bounded research/writing workflow state",
+    )
+    research_status_parser.add_argument("--store-root", required=True)
+    research_status_parser.add_argument("--thread-id", required=True)
+    research_assemble_parser = sub.add_parser(
+        "research-writing-assemble",
+        help="Assemble completed research/writing outputs into a markdown artifact",
+    )
+    research_assemble_parser.add_argument("--store-root", required=True)
+    research_assemble_parser.add_argument("--thread-id", required=True)
+    research_assemble_parser.add_argument("--name")
     ingest_parser = sub.add_parser("ingest-chat-export", help="Ingest a local chat export into the worker store")
     ingest_parser.add_argument("--input", required=True)
     ingest_parser.add_argument("--store-root", required=True)
@@ -560,7 +725,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "worker-store-list":
             _emit(run_worker_store_list({"store_root": args.store_root}))
         elif args.command == "worker-store-status":
-            _emit(run_worker_store_status({"store_root": args.store_root}))
+            _emit(run_worker_store_status({"store_root": args.store_root, "event_limit": args.event_limit}))
         elif args.command == "worker-store-maintain":
             _emit(
                 run_worker_store_maintain(
@@ -572,6 +737,35 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
             )
+        elif args.command == "worker-artifact-add":
+            if args.input == "-":
+                if not args.name:
+                    raise ValueError("name is required when input is -")
+                _emit(
+                    run_worker_artifact_add(
+                        {
+                            "store_root": args.store_root,
+                            "owner_id": args.owner_id,
+                            "content": sys.stdin.read(),
+                            "name": args.name,
+                            "media_type": args.media_type,
+                        }
+                    )
+                )
+            else:
+                _emit(
+                    run_worker_artifact_add(
+                        {
+                            "store_root": args.store_root,
+                            "owner_id": args.owner_id,
+                            "input_path": args.input,
+                            "name": args.name,
+                            "media_type": args.media_type,
+                        }
+                    )
+                )
+        elif args.command == "worker-artifact-list":
+            _emit(run_worker_artifact_list({"store_root": args.store_root, "owner_id": args.owner_id}))
         elif args.command == "worker-store-sync":
             _emit(
                 run_worker_store_sync(
@@ -640,6 +834,39 @@ def main(argv: list[str] | None = None) -> int:
                     {
                         "store_root": args.store_root,
                         "input_path": args.input,
+                    }
+                )
+            )
+        elif args.command == "research-writing-bootstrap":
+            _emit(
+                run_research_writing_bootstrap(
+                    {
+                        "store_root": args.store_root,
+                        "title": args.title,
+                        "objective": args.objective,
+                        "source_paths": args.source,
+                        "constraints": args.constraint,
+                        "thread_id": args.thread_id,
+                        "max_attempts": args.max_attempts,
+                    }
+                )
+            )
+        elif args.command == "research-writing-status":
+            _emit(
+                run_research_writing_status(
+                    {
+                        "store_root": args.store_root,
+                        "thread_id": args.thread_id,
+                    }
+                )
+            )
+        elif args.command == "research-writing-assemble":
+            _emit(
+                run_research_writing_assemble(
+                    {
+                        "store_root": args.store_root,
+                        "thread_id": args.thread_id,
+                        "name": args.name,
                     }
                 )
             )

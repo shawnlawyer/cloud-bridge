@@ -20,10 +20,11 @@ def list_manifests() -> tuple[dict, ...]:
     return tuple(manifest.to_dict() for manifest in list_default_manifests())
 
 
-def describe_store(store_root: str | Path) -> dict:
+def describe_store(store_root: str | Path, event_limit: int = 20) -> dict:
     store = FileTaskStore(store_root)
     summary = store.summarize()
     summary["blocked"] = _list_blocked_tasks(store)
+    summary["recent_events"] = store.recent_events(limit=event_limit)
     return summary
 
 

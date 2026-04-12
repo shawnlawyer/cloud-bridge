@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
+import mimetypes
 from pathlib import Path
+import shutil
 
 from .contracts import WorkerResult, WorkerTask
 from .runner import LocalWorkerRunner
@@ -129,6 +132,43 @@ class ReceiptRecord:
         return _parse_utc(self.lease_expires_at) <= (now or _utc_now())
 
 
+@dataclass(frozen=True)
+class ArtifactRecord:
+    artifact_id: str
+    owner_id: str
+    name: str
+    media_type: str
+    size_bytes: int
+    sha256: str
+    created_at: str
+    path: str
+
+    def to_dict(self) -> dict:
+        return {
+            "artifact_id": self.artifact_id,
+            "owner_id": self.owner_id,
+            "name": self.name,
+            "media_type": self.media_type,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+            "created_at": self.created_at,
+            "path": self.path,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ArtifactRecord":
+        return cls(
+            artifact_id=data["artifact_id"],
+            owner_id=data["owner_id"],
+            name=data["name"],
+            media_type=data["media_type"],
+            size_bytes=data["size_bytes"],
+            sha256=data["sha256"],
+            created_at=data["created_at"],
+            path=data["path"],
+        )
+
+
 class FileTaskStore:
     def __init__(self, root: str | Path, lease_seconds: int = 300) -> None:
         if not isinstance(lease_seconds, int) or lease_seconds <= 0:
@@ -137,9 +177,14 @@ class FileTaskStore:
         self.lease_seconds = lease_seconds
         self.tasks_dir = self.root / "tasks"
         self.receipts_dir = self.root / "receipts"
+        self.artifacts_dir = self.root / "artifacts"
+        self.artifact_files_dir = self.artifacts_dir / "files"
+        self.artifact_meta_dir = self.artifacts_dir / "meta"
         self.events_path = self.root / "events.jsonl"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self.receipts_dir.mkdir(parents=True, exist_ok=True)
+        self.artifact_files_dir.mkdir(parents=True, exist_ok=True)
+        self.artifact_meta_dir.mkdir(parents=True, exist_ok=True)
         self.events_path.touch(exist_ok=True)
 
     def enqueue(self, task: WorkerTask, max_attempts: int = 3) -> TaskRecord:
@@ -318,6 +363,78 @@ class FileTaskStore:
             records.append(ReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
         return tuple(records)
 
+    def write_artifact(
+        self,
+        owner_id: str,
+        name: str,
+        content: str,
+        media_type: str = "text/plain",
+    ) -> ArtifactRecord:
+        if not isinstance(owner_id, str) or not owner_id:
+            raise ValueError("owner_id must be a non-empty string")
+        if not isinstance(name, str) or not name:
+            raise ValueError("name must be a non-empty string")
+        if not isinstance(content, str):
+            raise TypeError("content must be a string")
+        if not isinstance(media_type, str) or not media_type:
+            raise ValueError("media_type must be a non-empty string")
+
+        artifact_id = self._build_artifact_id(owner_id, name)
+        file_path = self.artifact_files_dir / f"{artifact_id}__{_safe_name(name)}"
+        file_path.write_text(content, encoding="utf-8")
+        record = self._artifact_record(owner_id, name, media_type, file_path)
+        self._write_artifact(record)
+        _append_jsonl(
+            self.events_path,
+            {"event": "artifact_written", "artifact_id": record.artifact_id, "owner_id": owner_id},
+        )
+        return record
+
+    def copy_artifact(
+        self,
+        owner_id: str,
+        source_path: str | Path,
+        name: str | None = None,
+        media_type: str | None = None,
+    ) -> ArtifactRecord:
+        if not isinstance(owner_id, str) or not owner_id:
+            raise ValueError("owner_id must be a non-empty string")
+        source = Path(source_path)
+        if not source.exists() or not source.is_file():
+            raise ValueError("source_path must point to an existing file")
+        artifact_name = name or source.name
+        guessed_media_type = media_type or mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+
+        artifact_id = self._build_artifact_id(owner_id, artifact_name)
+        file_path = self.artifact_files_dir / f"{artifact_id}__{_safe_name(artifact_name)}"
+        shutil.copy2(source, file_path)
+        record = self._artifact_record(owner_id, artifact_name, guessed_media_type, file_path)
+        self._write_artifact(record)
+        _append_jsonl(
+            self.events_path,
+            {"event": "artifact_copied", "artifact_id": record.artifact_id, "owner_id": owner_id},
+        )
+        return record
+
+    def list_artifacts(self, owner_id: str | None = None) -> tuple[ArtifactRecord, ...]:
+        records = []
+        for path in sorted(self.artifact_meta_dir.glob("*.json")):
+            record = ArtifactRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            if owner_id is not None and record.owner_id != owner_id:
+                continue
+            records.append(record)
+        return tuple(records)
+
+    def get_artifact(self, artifact_id: str) -> ArtifactRecord:
+        path = self._artifact_meta_path(artifact_id)
+        if not path.exists():
+            raise KeyError("Unknown artifact")
+        return ArtifactRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def read_artifact_text(self, artifact_id: str) -> str:
+        record = self.get_artifact(artifact_id)
+        return Path(record.path).read_text(encoding="utf-8")
+
     def upsert_task_record(self, record: TaskRecord, force: bool = False) -> TaskRecord:
         path = self._task_path(record.task.task_id)
         if not path.exists():
@@ -371,6 +488,7 @@ class FileTaskStore:
 
         tasks = self.list_tasks()
         receipts = self.list_receipts()
+        artifacts = self.list_artifacts()
         for record in tasks:
             task_counts[record.status] += 1
         for receipt in receipts:
@@ -388,9 +506,19 @@ class FileTaskStore:
             "task_counts": task_counts,
             "receipt_count": len(receipts),
             "receipt_counts": receipt_counts,
+            "artifact_count": len(artifacts),
             "expired_receipt_ids": expired_receipts,
             "event_count": event_count,
         }
+
+    def recent_events(self, limit: int = 20) -> list[dict]:
+        if not isinstance(limit, int) or limit < 0:
+            raise ValueError("limit must be >= 0")
+        if limit == 0 or not self.events_path.exists():
+            return []
+        with self.events_path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+        return [json.loads(line) for line in lines[-limit:] if line.strip()]
 
     def prune(self, keep_done: int = 100, keep_failed: int = 50, event_keep: int = 1000) -> dict:
         for name, value in (("keep_done", keep_done), ("keep_failed", keep_failed), ("event_keep", event_keep)):
@@ -399,16 +527,19 @@ class FileTaskStore:
 
         deleted_task_ids = []
         deleted_receipt_ids = []
+        deleted_artifact_ids = []
 
         deleted_task_ids.extend(self._prune_task_status("done", keep_done))
         deleted_task_ids.extend(self._prune_task_status("failed", keep_failed))
 
         deleted_receipt_ids.extend(self._delete_receipts_for_tasks(set(deleted_task_ids)))
+        deleted_artifact_ids.extend(self._delete_artifacts_for_owners(set(deleted_task_ids)))
         event_count = self._compact_events(event_keep)
 
         return {
             "deleted_task_ids": deleted_task_ids,
             "deleted_receipt_ids": deleted_receipt_ids,
+            "deleted_artifact_ids": deleted_artifact_ids,
             "event_count": event_count,
         }
 
@@ -417,6 +548,9 @@ class FileTaskStore:
 
     def _receipt_path(self, receipt_id: str) -> Path:
         return self.receipts_dir / f"{receipt_id.replace(':', '__')}.json"
+
+    def _artifact_meta_path(self, artifact_id: str) -> Path:
+        return self.artifact_meta_dir / f"{artifact_id.replace(':', '__')}.json"
 
     def _load_receipt(self, receipt_id: str) -> ReceiptRecord:
         path = self._receipt_path(receipt_id)
@@ -429,6 +563,26 @@ class FileTaskStore:
 
     def _write_receipt(self, receipt: ReceiptRecord) -> None:
         _write_json(self._receipt_path(receipt.receipt_id), receipt.to_dict())
+
+    def _write_artifact(self, record: ArtifactRecord) -> None:
+        _write_json(self._artifact_meta_path(record.artifact_id), record.to_dict())
+
+    def _artifact_record(self, owner_id: str, name: str, media_type: str, file_path: Path) -> ArtifactRecord:
+        digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        return ArtifactRecord(
+            artifact_id=file_path.name.split("__", 1)[0],
+            owner_id=owner_id,
+            name=name,
+            media_type=media_type,
+            size_bytes=file_path.stat().st_size,
+            sha256=digest,
+            created_at=_format_utc(_utc_now()),
+            path=str(file_path),
+        )
+
+    def _build_artifact_id(self, owner_id: str, name: str) -> str:
+        digest = hashlib.sha256(f"{owner_id}:{name}:{_utc_now().isoformat()}".encode("utf-8")).hexdigest()[:12]
+        return f"artifact:{digest}"
 
     def _prune_task_status(self, status: str, keep: int) -> list[str]:
         matches = []
@@ -461,6 +615,24 @@ class FileTaskStore:
             _append_jsonl(
                 self.events_path,
                 {"event": "pruned_receipt", "receipt_id": receipt.receipt_id, "task_id": receipt.task_id},
+            )
+        return deleted
+
+    def _delete_artifacts_for_owners(self, owner_ids: set[str]) -> list[str]:
+        if not owner_ids:
+            return []
+        deleted = []
+        for path in self.artifact_meta_dir.glob("*.json"):
+            record = ArtifactRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            if record.owner_id not in owner_ids:
+                continue
+            artifact_path = Path(record.path)
+            artifact_path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            deleted.append(record.artifact_id)
+            _append_jsonl(
+                self.events_path,
+                {"event": "pruned_artifact", "artifact_id": record.artifact_id, "owner_id": record.owner_id},
             )
         return deleted
 
@@ -520,3 +692,7 @@ def _incoming_receipt_wins(existing: ReceiptRecord, incoming: ReceiptRecord) -> 
         incoming.lease_expires_at or "",
     )
     return incoming_key > existing_key
+
+
+def _safe_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
