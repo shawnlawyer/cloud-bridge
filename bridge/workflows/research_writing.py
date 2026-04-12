@@ -9,6 +9,26 @@ import re
 from bridge.workers import FileTaskStore, WorkerTask, enqueue_task
 
 _PACKET_NAME = "research-packet.json"
+_TEXT_SOURCE_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".rst",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".csv",
+    ".tsv",
+    ".html",
+    ".htm",
+    ".xml",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".css",
+}
 
 
 def bootstrap_research_writing(
@@ -133,6 +153,63 @@ def bootstrap_research_writing(
     }
 
 
+def bootstrap_research_writing_from_folder(
+    store_root: str | Path,
+    *,
+    folder_path: str | Path,
+    title: str,
+    objective: str,
+    constraints: list[str] | tuple[str, ...] = (),
+    thread_id: str | None = None,
+    max_attempts: int = 3,
+    max_files: int = 64,
+    max_bytes: int = 1_000_000,
+) -> dict:
+    if not isinstance(max_files, int) or max_files <= 0:
+        raise ValueError("max_files must be a positive integer")
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+
+    root = Path(folder_path)
+    if not root.exists() or not root.is_dir():
+        raise ValueError("folder_path must point to an existing directory")
+
+    source_paths = []
+    skipped = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(part.startswith(".") for part in path.relative_to(root).parts):
+            continue
+        if path.suffix.lower() not in _TEXT_SOURCE_SUFFIXES:
+            skipped.append({"path": str(path), "reason": "unsupported suffix"})
+            continue
+        size = path.stat().st_size
+        if size > max_bytes:
+            skipped.append({"path": str(path), "reason": f"exceeds {max_bytes} bytes"})
+            continue
+        source_paths.append(str(path))
+        if len(source_paths) >= max_files:
+            break
+
+    if not source_paths:
+        raise ValueError("folder does not contain any supported source files")
+
+    out = bootstrap_research_writing(
+        store_root,
+        title=title,
+        objective=objective,
+        source_paths=source_paths,
+        constraints=constraints,
+        thread_id=thread_id,
+        max_attempts=max_attempts,
+    )
+    out["source_count"] = len(source_paths)
+    out["source_paths"] = source_paths
+    out["skipped"] = skipped
+    return out
+
+
 def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
     store = FileTaskStore(store_root)
     owner_id = f"workflow:{thread_id}"
@@ -153,6 +230,39 @@ def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
         "artifact_count": len(artifacts),
         "artifacts": [artifact.to_dict() for artifact in artifacts],
     }
+
+
+def list_research_writing(store_root: str | Path) -> list[dict]:
+    store = FileTaskStore(store_root)
+    workflows = []
+    for artifact in store.list_artifacts():
+        if artifact.name != _PACKET_NAME or not artifact.owner_id.startswith("workflow:"):
+            continue
+        packet = _load_packet(store, [artifact])
+        thread_id = packet.get("thread_id")
+        if not thread_id:
+            continue
+        tasks = [record for record in store.list_tasks() if record.task.thread_id == thread_id]
+        counts = Counter(record.status for record in tasks)
+        workflow_artifacts = list(store.list_artifacts(owner_id=f"workflow:{thread_id}"))
+        latest_draft = next((item for item in reversed(workflow_artifacts) if item.name.endswith(".md")), None)
+        workflows.append(
+            {
+                "thread_id": thread_id,
+                "owner_id": f"workflow:{thread_id}",
+                "title": packet.get("title", thread_id),
+                "objective": packet.get("objective", ""),
+                "constraints": packet.get("constraints", []),
+                "source_count": len(packet.get("sources", [])),
+                "task_count": len(tasks),
+                "task_counts": dict(sorted(counts.items())),
+                "artifact_count": len(workflow_artifacts),
+                "latest_draft_artifact_id": latest_draft.artifact_id if latest_draft else None,
+                "created_at": packet.get("created_at"),
+            }
+        )
+    workflows.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return workflows
 
 
 def assemble_research_writing(store_root: str | Path, thread_id: str, name: str | None = None) -> dict:

@@ -28,7 +28,7 @@ def describe_store(store_root: str | Path, event_limit: int = 20) -> dict:
     return summary
 
 
-def process_next_task(store_root: str | Path, worker_id: str) -> dict:
+def process_next_task(store_root: str | Path, worker_id: str, thread_id: str | None = None) -> dict:
     store = FileTaskStore(store_root)
     reclaimed = store.reclaim_expired()
     runner = build_default_runner()
@@ -39,11 +39,11 @@ def process_next_task(store_root: str | Path, worker_id: str) -> dict:
     except KeyError:
         manifest = None
     if manifest is not None:
-        predicate = lambda record: manifest.admits(record.task)[0]
+        predicate = lambda record: (thread_id is None or record.task.thread_id == thread_id) and manifest.admits(record.task)[0]
 
     receipt = store.claim(worker_id, predicate=predicate)
     if receipt is None:
-        blocked = _list_blocked_tasks(store, worker_id=worker_id)
+        blocked = _list_blocked_tasks(store, worker_id=worker_id, thread_id=thread_id)
         return {
             "processed": False,
             "worker_id": worker_id,
@@ -84,7 +84,7 @@ def process_next_task(store_root: str | Path, worker_id: str) -> dict:
     }
 
 
-def dispatch_tasks(store_root: str | Path, limit: int = 1) -> dict:
+def dispatch_tasks(store_root: str | Path, limit: int = 1, thread_id: str | None = None) -> dict:
     if not isinstance(limit, int) or limit <= 0:
         raise ValueError("limit must be a positive integer")
 
@@ -105,7 +105,7 @@ def dispatch_tasks(store_root: str | Path, limit: int = 1) -> dict:
         for manifest in manifests:
             claims = 0
             while claims < manifest.dispatch_policy.max_claims_per_cycle and processed < limit:
-                out = process_next_task(store_root, manifest.worker_id)
+                out = process_next_task(store_root, manifest.worker_id, thread_id=thread_id)
                 if not out["processed"]:
                     break
                 out["reclaimed"] = []
@@ -120,18 +120,20 @@ def dispatch_tasks(store_root: str | Path, limit: int = 1) -> dict:
         "processed_count": processed,
         "reclaimed_count": len(reclaimed),
         "reclaimed": [record.to_dict() for record in reclaimed],
-        "blocked": _list_blocked_tasks(FileTaskStore(store_root)),
+        "blocked": _list_blocked_tasks(FileTaskStore(store_root), thread_id=thread_id),
         "results": results,
     }
 
 
-def _list_blocked_tasks(store: FileTaskStore, worker_id: str | None = None) -> list[dict]:
+def _list_blocked_tasks(store: FileTaskStore, worker_id: str | None = None, thread_id: str | None = None) -> list[dict]:
     manifests = {manifest.worker_id: manifest for manifest in list_default_manifests()}
     blocked = []
     for record in store.list_tasks():
         if record.status != "pending":
             continue
         if worker_id is not None and record.task.worker_id != worker_id:
+            continue
+        if thread_id is not None and record.task.thread_id != thread_id:
             continue
         manifest = manifests.get(record.task.worker_id)
         if manifest is None:

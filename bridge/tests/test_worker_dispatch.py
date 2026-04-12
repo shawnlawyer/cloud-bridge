@@ -102,6 +102,29 @@ class TestWorkerDispatch(unittest.TestCase):
             self.assertEqual(out["blocked"][0]["task_id"], "task-plan-203")
             self.assertEqual(out["blocked"][0]["reason"], "missing payload keys: items")
 
+    def test_dispatch_can_be_scoped_to_one_thread(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for task_id, thread_id in (("task-plan-205", "thread-a"), ("task-plan-206", "thread-b")):
+                run_worker_enqueue(
+                    {
+                        "store_root": temp_dir,
+                        "task": {
+                            "task_id": task_id,
+                            "thread_id": thread_id,
+                            "worker_id": "planner",
+                            "task_type": "plan",
+                            "payload": {"items": ["count stock"]},
+                            "requires": ["plan"],
+                            "effects": [],
+                        },
+                    }
+                )
+
+            out = run_worker_dispatch({"store_root": temp_dir, "limit": 4, "thread_id": "thread-b"})
+
+            self.assertEqual(out["processed_count"], 1)
+            self.assertEqual(out["results"][0]["task"]["task"]["task_id"], "task-plan-206")
+
 
 if __name__ == "__main__":
     unittest.main()

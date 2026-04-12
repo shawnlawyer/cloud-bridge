@@ -63,6 +63,7 @@ python -m unittest
 - `Staff Phase 5`: bounded cloud fetch/import, lease reclaim, and manifest admission rules
 - `Staff Phase 6`: zero-cost local maintenance and cloud opt-in guardrails
 - `Staff Phase 7`: private LAN operator console, local artifact storage, and bounded research/writing workflow
+- `Staff Phase 8`: browser-based project intake, workflow dashboards, artifact preview, and folder import
 - `Persistent store`: explicit CLI/library component only; not enabled implicitly by HTTP
 
 **HTTP Service**
@@ -89,6 +90,16 @@ Endpoints:
 - `GET /worker/manifests`
 - `GET /operator/state`
 - `GET /operator/console`
+- `GET /projects/research-writing`
+- `GET /projects/research-writing/board`
+- `POST /projects/research-writing/bootstrap`
+- `POST /projects/research-writing/import-folder`
+- `GET /projects/research-writing/{thread_id}`
+- `GET /projects/research-writing/{thread_id}/view`
+- `POST /projects/research-writing/{thread_id}/dispatch`
+- `POST /projects/research-writing/{thread_id}/assemble`
+- `GET /artifacts`
+- `GET /artifacts/{artifact_id}`
 - `GET /metrics`
 - `GET /health`
 
@@ -101,6 +112,7 @@ uvicorn bridge.api.app:app --host 127.0.0.1 --port 8080
 Then open:
 - `http://127.0.0.1:8080/operator/console`
 - `http://<LAN_IP>:8080/operator/console`
+- `http://<LAN_IP>:8080/projects/research-writing/board`
 
 **Docker**
 Build:
@@ -180,7 +192,10 @@ cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --limit 4
 cloud-bridge worker-reclaim --store-root /tmp/cloud-bridge-store
 cloud-bridge worker-cloud-replay --store-root /tmp/cloud-bridge-store --input export.json
 cloud-bridge research-writing-bootstrap --store-root /tmp/cloud-bridge-store --title "Local Hub Primer" --objective "Explain the private hub" --source ./notes/source.md --constraint "local only" --constraint "zero cost"
+cloud-bridge research-writing-import-folder --store-root /tmp/cloud-bridge-store --folder ./notes/project-alpha --title "Project Alpha" --objective "Turn the folder into a working draft" --constraint "local only"
+cloud-bridge research-writing-list --store-root /tmp/cloud-bridge-store
 cloud-bridge research-writing-status --store-root /tmp/cloud-bridge-store --thread-id research:local-hub-primer
+cloud-bridge worker-dispatch --store-root /tmp/cloud-bridge-store --thread-id research:local-hub-primer --limit 4
 cloud-bridge research-writing-assemble --store-root /tmp/cloud-bridge-store --thread-id research:local-hub-primer
 cloud-bridge ingest-chat-export --input /Users/shawnlawyer/cloud-bridge/examples/chat_export_sample.json --store-root /tmp/cloud-bridge-store
 cloud-bridge metrics
@@ -194,12 +209,21 @@ cloud-bridge health
 
 **Bounded Research/Writing Workflow**
 - `research-writing-bootstrap` imports local sources, writes a workflow packet, and enqueues four bounded tasks:
-  - `guardian` for constraints/risk review
+  - `guardian` for Steward constraints/risk review
   - `archivist` for source digest
   - `planner` for ordered steps
   - `scribe` for a first-pass draft
+- `research-writing-import-folder` walks a local folder, imports supported text-like files, and turns the whole folder into one bounded project.
+- `research-writing-list` gives you a compact project index you can use from scripts or the browser board.
 - `worker-dispatch --limit 4` can process the whole workflow in one bounded cycle.
+- `worker-dispatch --thread-id ... --limit 4` scopes dispatch to one project instead of the whole store.
 - `research-writing-assemble` writes a markdown artifact that combines the completed outputs into a single working draft.
+
+**Browser-First Local Use**
+- `/projects/research-writing/board` is a lightweight intake screen for new projects.
+- The board can start a project from newline-separated source paths or a server-local folder path.
+- Each project page can run a bounded dispatch and assemble a fresh draft from the browser.
+- `/artifacts/{artifact_id}` lets you preview/download local outputs without any paid service.
 
 **Zero-Cost Defaults**
 - Local filesystem is the default runtime.

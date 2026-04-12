@@ -5,6 +5,8 @@ from pathlib import Path
 from bridge.cli import (
     run_research_writing_assemble,
     run_research_writing_bootstrap,
+    run_research_writing_import_folder,
+    run_research_writing_list,
     run_research_writing_status,
     run_worker_dispatch,
 )
@@ -60,6 +62,31 @@ class TestResearchWritingWorkflow(unittest.TestCase):
             self.assertIn("## Working Plan", document)
             self.assertIn("## Draft", document)
             self.assertIn("scribe", assembled["included_workers"])
+
+    def test_import_folder_and_list_workflows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir, "drop")
+            folder.mkdir()
+            Path(folder, "notes.md").write_text("local-first note", encoding="utf-8")
+            Path(folder, "draft.txt").write_text("working draft", encoding="utf-8")
+            Path(folder, "image.png").write_bytes(b"not-really-an-image")
+
+            imported = run_research_writing_import_folder(
+                {
+                    "store_root": temp_dir,
+                    "folder_path": str(folder),
+                    "title": "Folder Import",
+                    "objective": "Turn the folder into a project.",
+                    "constraints": ["local only"],
+                }
+            )
+
+            listed = run_research_writing_list({"store_root": temp_dir})
+
+            self.assertEqual(imported["source_count"], 2)
+            self.assertTrue(imported["skipped"])
+            self.assertEqual(len(listed["workflows"]), 1)
+            self.assertEqual(listed["workflows"][0]["title"], "Folder Import")
 
 
 if __name__ == "__main__":
