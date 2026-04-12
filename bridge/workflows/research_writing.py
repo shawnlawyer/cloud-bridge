@@ -51,92 +51,23 @@ def bootstrap_research_writing(
     store = FileTaskStore(store_root)
     thread = thread_id or f"research:{_slug(title)}"
     owner_id = f"workflow:{thread}"
-    source_artifacts = []
-    source_packets = []
-    excerpt_texts = []
-
-    for raw_path in source_paths:
-        source = Path(raw_path)
-        if not source.exists() or not source.is_file():
-            raise ValueError(f"source path does not exist: {source}")
-        artifact = store.copy_artifact(owner_id=owner_id, source_path=source)
-        excerpt = _read_excerpt(source)
-        source_artifacts.append(artifact)
-        source_packets.append(
-            {
-                "artifact_id": artifact.artifact_id,
-                "name": artifact.name,
-                "path": str(source),
-                "excerpt": excerpt,
-            }
-        )
-        if excerpt:
-            excerpt_texts.append(f"{artifact.name}: {excerpt}")
-
-    packet = {
-        "thread_id": thread,
-        "owner_id": owner_id,
-        "title": title,
-        "objective": objective,
-        "constraints": list(constraints),
-        "sources": source_packets,
-        "created_at": _utc_now_text(),
-    }
-    packet_artifact = store.write_artifact(
+    source_artifacts, source_packets, excerpt_texts = _import_source_artifacts(store, owner_id, source_paths)
+    packet_artifact = _write_packet(
+        store,
         owner_id=owner_id,
-        name=_PACKET_NAME,
-        content=json.dumps(packet, indent=2, sort_keys=True),
-        media_type="application/json",
+        thread_id=thread,
+        title=title,
+        objective=objective,
+        constraints=constraints,
+        source_packets=source_packets,
     )
-
-    tasks = (
-        WorkerTask(
-            task_id=f"{thread}:guardian",
-            thread_id=thread,
-            worker_id="guardian",
-            task_type="review",
-            payload={
-                "objective": objective,
-                "constraints": list(constraints),
-                "proposed_effects": [],
-            },
-            requires=("review",),
-            effects=(),
-        ),
-        WorkerTask(
-            task_id=f"{thread}:archivist",
-            thread_id=thread,
-            worker_id="archivist",
-            task_type="summarize",
-            payload={
-                "texts": excerpt_texts or [objective],
-            },
-            requires=("summarize",),
-            effects=(),
-        ),
-        WorkerTask(
-            task_id=f"{thread}:planner",
-            thread_id=thread,
-            worker_id="planner",
-            task_type="plan",
-            payload={
-                "items": _plan_items(objective, [artifact.name for artifact in source_artifacts], constraints),
-            },
-            requires=("plan",),
-            effects=(),
-        ),
-        WorkerTask(
-            task_id=f"{thread}:scribe",
-            thread_id=thread,
-            worker_id="scribe",
-            task_type="draft",
-            payload={
-                "title": title,
-                "points": _draft_points(objective, [artifact.name for artifact in source_artifacts], constraints),
-            },
-            requires=("draft",),
-            effects=(),
-        ),
+    tasks = _build_workflow_tasks(
+        thread,
+        title=title,
+        objective=objective,
+        constraints=constraints,
+        source_artifacts=source_artifacts,
+        excerpt_texts=excerpt_texts,
     )
 
     for task in tasks:
@@ -165,33 +96,9 @@ def bootstrap_research_writing_from_folder(
     max_files: int = 64,
     max_bytes: int = 1_000_000,
 ) -> dict:
-    if not isinstance(max_files, int) or max_files <= 0:
-        raise ValueError("max_files must be a positive integer")
-    if not isinstance(max_bytes, int) or max_bytes <= 0:
-        raise ValueError("max_bytes must be a positive integer")
-
-    root = Path(folder_path)
-    if not root.exists() or not root.is_dir():
-        raise ValueError("folder_path must point to an existing directory")
-
-    source_paths = []
-    skipped = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        if any(part.startswith(".") for part in path.relative_to(root).parts):
-            continue
-        if path.suffix.lower() not in _TEXT_SOURCE_SUFFIXES:
-            skipped.append({"path": str(path), "reason": "unsupported suffix"})
-            continue
-        size = path.stat().st_size
-        if size > max_bytes:
-            skipped.append({"path": str(path), "reason": f"exceeds {max_bytes} bytes"})
-            continue
-        source_paths.append(str(path))
-        if len(source_paths) >= max_files:
-            break
-
+    collected = collect_research_writing_sources(folder_path, max_files=max_files, max_bytes=max_bytes)
+    source_paths = collected["source_paths"]
+    skipped = collected["skipped"]
     if not source_paths:
         raise ValueError("folder does not contain any supported source files")
 
@@ -208,6 +115,75 @@ def bootstrap_research_writing_from_folder(
     out["source_paths"] = source_paths
     out["skipped"] = skipped
     return out
+
+
+def refresh_research_writing(
+    store_root: str | Path,
+    *,
+    thread_id: str,
+    source_paths: list[str] | tuple[str, ...] = (),
+    title: str | None = None,
+    objective: str | None = None,
+    constraints: list[str] | tuple[str, ...] | None = None,
+    max_attempts: int = 3,
+) -> dict:
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("thread_id must be a non-empty string")
+    if title is not None and (not isinstance(title, str) or not title):
+        raise ValueError("title must be a non-empty string when provided")
+    if objective is not None and (not isinstance(objective, str) or not objective):
+        raise ValueError("objective must be a non-empty string when provided")
+    if constraints is not None and (
+        not isinstance(constraints, (list, tuple)) or not all(isinstance(item, str) and item for item in constraints)
+    ):
+        raise ValueError("constraints must be a list or tuple of non-empty strings when provided")
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("max_attempts must be a positive integer")
+
+    store = FileTaskStore(store_root)
+    owner_id = f"workflow:{thread_id}"
+    packet = _load_packet(store, list(store.list_artifacts(owner_id=owner_id)))
+    resolved_title = title or packet.get("title")
+    resolved_objective = objective or packet.get("objective")
+    resolved_constraints = list(constraints) if constraints is not None else list(packet.get("constraints", []))
+    if not resolved_title:
+        raise ValueError("title is required when the workflow packet is missing")
+    if not resolved_objective:
+        raise ValueError("objective is required when the workflow packet is missing")
+
+    source_artifacts, source_packets, excerpt_texts = _import_source_artifacts(store, owner_id, source_paths)
+    packet_artifact = _write_packet(
+        store,
+        owner_id=owner_id,
+        thread_id=thread_id,
+        title=resolved_title,
+        objective=resolved_objective,
+        constraints=resolved_constraints,
+        source_packets=source_packets,
+    )
+    revision = _revision_token()
+    tasks = _build_workflow_tasks(
+        thread_id,
+        title=resolved_title,
+        objective=resolved_objective,
+        constraints=resolved_constraints,
+        source_artifacts=source_artifacts,
+        excerpt_texts=excerpt_texts,
+        revision=revision,
+    )
+    for task in tasks:
+        enqueue_task(store_root, task, max_attempts=max_attempts)
+
+    return {
+        "thread_id": thread_id,
+        "owner_id": owner_id,
+        "task_count": len(tasks),
+        "task_ids": [task.task_id for task in tasks],
+        "artifact_count": len(source_artifacts) + 1,
+        "artifact_ids": [packet_artifact.artifact_id, *[artifact.artifact_id for artifact in source_artifacts]],
+        "packet_artifact_id": packet_artifact.artifact_id,
+        "revision": revision,
+    }
 
 
 def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
@@ -234,22 +210,28 @@ def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
 
 def list_research_writing(store_root: str | Path) -> list[dict]:
     store = FileTaskStore(store_root)
-    workflows = []
+    packet_artifacts_by_owner: dict[str, object] = {}
     for artifact in store.list_artifacts():
         if artifact.name != _PACKET_NAME or not artifact.owner_id.startswith("workflow:"):
             continue
+        current = packet_artifacts_by_owner.get(artifact.owner_id)
+        if current is None or artifact.created_at > current.created_at:
+            packet_artifacts_by_owner[artifact.owner_id] = artifact
+
+    workflows = []
+    for owner_id, artifact in packet_artifacts_by_owner.items():
         packet = _load_packet(store, [artifact])
         thread_id = packet.get("thread_id")
         if not thread_id:
             continue
         tasks = [record for record in store.list_tasks() if record.task.thread_id == thread_id]
         counts = Counter(record.status for record in tasks)
-        workflow_artifacts = list(store.list_artifacts(owner_id=f"workflow:{thread_id}"))
-        latest_draft = next((item for item in reversed(workflow_artifacts) if item.name.endswith(".md")), None)
+        workflow_artifacts = list(store.list_artifacts(owner_id=owner_id))
+        latest_draft = _latest_artifact(workflow_artifacts, lambda item: item.name.endswith(".md"))
         workflows.append(
             {
                 "thread_id": thread_id,
-                "owner_id": f"workflow:{thread_id}",
+                "owner_id": owner_id,
                 "title": packet.get("title", thread_id),
                 "objective": packet.get("objective", ""),
                 "constraints": packet.get("constraints", []),
@@ -269,7 +251,10 @@ def assemble_research_writing(store_root: str | Path, thread_id: str, name: str 
     store = FileTaskStore(store_root)
     state = describe_research_writing(store_root, thread_id)
     owner_id = state["owner_id"]
-    tasks_by_worker = {task["task"]["worker_id"]: task for task in state["tasks"]}
+    tasks_by_worker = {}
+    for task in sorted(state["tasks"], key=lambda item: item["task"]["task_id"]):
+        if task.get("result"):
+            tasks_by_worker[task["task"]["worker_id"]] = task
 
     title = state["title"]
     objective = state["objective"]
@@ -327,6 +312,42 @@ def assemble_research_writing(store_root: str | Path, thread_id: str, name: str 
     }
 
 
+def collect_research_writing_sources(
+    folder_path: str | Path,
+    *,
+    max_files: int = 64,
+    max_bytes: int = 1_000_000,
+) -> dict:
+    if not isinstance(max_files, int) or max_files <= 0:
+        raise ValueError("max_files must be a positive integer")
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+
+    root = Path(folder_path)
+    if not root.exists() or not root.is_dir():
+        raise ValueError("folder_path must point to an existing directory")
+
+    source_paths = []
+    skipped = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(part.startswith(".") for part in path.relative_to(root).parts):
+            continue
+        if path.suffix.lower() not in _TEXT_SOURCE_SUFFIXES:
+            skipped.append({"path": str(path), "reason": "unsupported suffix"})
+            continue
+        size = path.stat().st_size
+        if size > max_bytes:
+            skipped.append({"path": str(path), "reason": f"exceeds {max_bytes} bytes"})
+            continue
+        if len(source_paths) >= max_files:
+            skipped.append({"path": str(path), "reason": f"exceeds max_files limit {max_files}"})
+            continue
+        source_paths.append(str(path))
+    return {"source_paths": source_paths, "skipped": skipped}
+
+
 def _plan_items(objective: str, source_names: list[str], constraints: list[str] | tuple[str, ...]) -> list[str]:
     items = [f"Clarify objective: {objective}"]
     items.extend(f"Read source: {name}" for name in source_names)
@@ -342,8 +363,139 @@ def _draft_points(objective: str, source_names: list[str], constraints: list[str
     return points
 
 
+def _import_source_artifacts(
+    store: FileTaskStore,
+    owner_id: str,
+    source_paths: list[str] | tuple[str, ...],
+) -> tuple[list, list[dict], list[str]]:
+    if not isinstance(source_paths, (list, tuple)) or not all(isinstance(path, str) and path for path in source_paths):
+        raise ValueError("source_paths must be a list or tuple of non-empty strings")
+
+    source_artifacts = []
+    source_packets = []
+    excerpt_texts = []
+    for raw_path in source_paths:
+        source = Path(raw_path)
+        if not source.exists() or not source.is_file():
+            raise ValueError(f"source path does not exist: {source}")
+        artifact = store.copy_artifact(owner_id=owner_id, source_path=source, name=str(source))
+        stat = source.stat()
+        excerpt = _read_excerpt(source)
+        source_artifacts.append(artifact)
+        source_packets.append(
+            {
+                "artifact_id": artifact.artifact_id,
+                "name": artifact.name,
+                "path": str(source),
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "excerpt": excerpt,
+            }
+        )
+        excerpt_texts.append(excerpt)
+    return source_artifacts, source_packets, excerpt_texts
+
+
+def _write_packet(
+    store: FileTaskStore,
+    *,
+    owner_id: str,
+    thread_id: str,
+    title: str,
+    objective: str,
+    constraints: list[str] | tuple[str, ...],
+    source_packets: list[dict],
+):
+    packet = {
+        "thread_id": thread_id,
+        "title": title,
+        "objective": objective,
+        "constraints": list(constraints),
+        "sources": source_packets,
+        "created_at": _utc_now_text(),
+    }
+    return store.write_artifact(
+        owner_id=owner_id,
+        name=_PACKET_NAME,
+        content=json.dumps(packet, indent=2, sort_keys=True),
+        media_type="application/json",
+    )
+
+
+def _build_workflow_tasks(
+    thread_id: str,
+    *,
+    title: str,
+    objective: str,
+    constraints: list[str] | tuple[str, ...],
+    source_artifacts: list,
+    excerpt_texts: list[str],
+    revision: str | None = None,
+) -> tuple[WorkerTask, ...]:
+    suffix = f":{revision}" if revision else ""
+    source_names = [artifact.name for artifact in source_artifacts]
+    source_artifact_ids = [artifact.artifact_id for artifact in source_artifacts]
+    plan_items = _plan_items(objective, source_names, constraints)
+    draft_points = _draft_points(objective, source_names, constraints)
+    return (
+        WorkerTask(
+            task_id=f"{thread_id}:guardian{suffix}",
+            thread_id=thread_id,
+            worker_id="guardian",
+            task_type="review",
+            payload={
+                "objective": objective,
+                "constraints": list(constraints),
+                "proposed_effects": [],
+                "source_artifact_ids": source_artifact_ids,
+            },
+            requires=("review",),
+            effects=(),
+        ),
+        WorkerTask(
+            task_id=f"{thread_id}:archivist{suffix}",
+            thread_id=thread_id,
+            worker_id="archivist",
+            task_type="summarize",
+            payload={
+                "texts": excerpt_texts,
+                "source_names": source_names,
+                "source_artifact_ids": source_artifact_ids,
+            },
+            requires=("summarize",),
+            effects=(),
+        ),
+        WorkerTask(
+            task_id=f"{thread_id}:planner{suffix}",
+            thread_id=thread_id,
+            worker_id="planner",
+            task_type="plan",
+            payload={
+                "items": plan_items,
+                "objective": objective,
+                "constraints": list(constraints),
+            },
+            requires=("plan",),
+            effects=(),
+        ),
+        WorkerTask(
+            task_id=f"{thread_id}:scribe{suffix}",
+            thread_id=thread_id,
+            worker_id="scribe",
+            task_type="draft",
+            payload={
+                "title": title,
+                "points": draft_points,
+                "source_artifact_ids": source_artifact_ids,
+            },
+            requires=("draft",),
+            effects=(),
+        ),
+    )
+
+
 def _load_packet(store: FileTaskStore, artifacts: list) -> dict:
-    packet_artifact = next((artifact for artifact in artifacts if artifact.name == _PACKET_NAME), None)
+    packet_artifact = _latest_artifact(artifacts, lambda artifact: artifact.name == _PACKET_NAME)
     if packet_artifact is None:
         return {}
     try:
@@ -363,6 +515,17 @@ def _read_excerpt(path: Path, max_chars: int = 1200) -> str:
 def _slug(value: str) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return cleaned[:48] or "project"
+
+
+def _latest_artifact(artifacts: list, predicate) -> object | None:
+    matches = [artifact for artifact in artifacts if predicate(artifact)]
+    if not matches:
+        return None
+    return max(matches, key=lambda artifact: artifact.created_at)
+
+
+def _revision_token() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
 
 
 def _utc_now_text() -> str:

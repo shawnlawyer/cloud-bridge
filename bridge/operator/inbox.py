@@ -55,7 +55,7 @@ def render_inbox_page(state: dict) -> str:
   </style>
 </head>
 <body>
-  <p><a href=\"/operator/console\">Operator console</a> · <a href=\"/projects/research-writing/board\">Projects</a></p>
+  <p><a href=\"/operator/console\">Operator console</a> · <a href=\"/projects/research-writing/board\">Projects</a> · <a href=\"/drop-folders/view\">Drop folders</a></p>
   <h1>Cloud Bridge Inbox</h1>
   <p class=\"muted\">What needs attention now across the private hub.</p>
   <div>

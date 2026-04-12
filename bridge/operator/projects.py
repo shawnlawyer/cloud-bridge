@@ -48,7 +48,7 @@ def render_project_board(workflows: list[dict]) -> str:
 </head>
 <body>
   <h1>Cloud Bridge Projects</h1>
-  <p class=\"muted\">Zero-cost local intake for research/writing work on your private hub. <a href=\"/inbox\">Open inbox</a></p>
+  <p class=\"muted\">Zero-cost local intake for research/writing work on your private hub. <a href=\"/inbox\">Open inbox</a> · <a href=\"/drop-folders/view\">Open drop folders</a></p>
   <div class=\"grid\">
     <section class=\"card\">
       <h2>New Project</h2>
@@ -147,7 +147,7 @@ def render_project_detail(project: dict) -> str:
   </style>
 </head>
 <body>
-  <p><a href=\"/projects/research-writing/board\">Back to projects</a></p>
+  <p><a href=\"/projects/research-writing/board\">Back to projects</a> · <a href=\"/drop-folders/view\">Drop folders</a></p>
   <h1>{escape(project.get('title', project['thread_id']))}</h1>
   <p class=\"muted\"><code>{escape(project['thread_id'])}</code></p>
   <div class=\"card\">

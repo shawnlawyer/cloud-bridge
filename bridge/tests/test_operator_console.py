@@ -1,6 +1,12 @@
 import unittest
 
-from bridge.operator import render_inbox_page, render_operator_console, render_project_board, render_project_detail
+from bridge.operator import (
+    render_drop_folder_page,
+    render_inbox_page,
+    render_operator_console,
+    render_project_board,
+    render_project_detail,
+)
 
 
 class TestOperatorConsole(unittest.TestCase):
@@ -123,6 +129,34 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("Reclaim Expired", inbox)
         self.assertIn("Maintain Store", inbox)
         self.assertIn("Steward", inbox)
+
+    def test_render_drop_folder_page_includes_register_and_scan_actions(self):
+        html = render_drop_folder_page(
+            {
+                "summary": {"count": 1, "pending_count": 1, "missing_count": 0},
+                "drop_folders": [
+                    {
+                        "name": "research-intake",
+                        "folder_path": "/runtime/drop/research-intake",
+                        "title": "Research Intake",
+                        "thread_id": "research:drop:research-intake",
+                        "project_url": "/projects/research-writing/research:drop:research-intake/view",
+                        "exists": True,
+                        "source_count": 2,
+                        "pending_change_count": 1,
+                        "changed_paths": ["notes.md"],
+                        "removed_paths": [],
+                        "last_import_at": "2026-04-12T10:00:00Z",
+                        "last_scan_at": "2026-04-12T10:05:00Z",
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("Cloud Bridge Drop Folders", html)
+        self.assertIn("Register Folder", html)
+        self.assertIn("Scan All", html)
+        self.assertIn("research-intake", html)
 
 
 if __name__ == "__main__":

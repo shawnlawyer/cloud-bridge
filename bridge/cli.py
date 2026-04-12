@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import subprocess
 import sys
 
 from bridge.core.envelope import Envelope
+from bridge.drop_folders import list_drop_folders, register_drop_folder, scan_drop_folders
 from bridge.inbox import build_inbox_state
 from bridge.core.routing import route
 from bridge.federation.handshake import handshake
@@ -38,6 +40,7 @@ from bridge.workflows import (
     bootstrap_research_writing_from_folder,
     describe_research_writing,
     list_research_writing,
+    refresh_research_writing,
 )
 
 
@@ -448,6 +451,77 @@ def run_research_writing_import_folder(request: dict) -> dict:
     return out
 
 
+def run_drop_folder_register(request: dict) -> dict:
+    store_root = request.get("store_root")
+    name = request.get("name")
+    folder_path = request.get("folder_path")
+    title = request.get("title")
+    objective = request.get("objective")
+    constraints = request.get("constraints", [])
+    thread_id = request.get("thread_id")
+    max_attempts = request.get("max_attempts", 3)
+    max_files = request.get("max_files", 64)
+    max_bytes = request.get("max_bytes", 1_000_000)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(folder_path, str) or not folder_path:
+        raise ValueError("folder_path must be a non-empty string")
+    if not isinstance(title, str) or not title:
+        raise ValueError("title must be a non-empty string")
+    if not isinstance(objective, str) or not objective:
+        raise ValueError("objective must be a non-empty string")
+    if not isinstance(constraints, list) or not all(isinstance(item, str) and item for item in constraints):
+        raise ValueError("constraints must be a list of non-empty strings")
+    if thread_id is not None and (not isinstance(thread_id, str) or not thread_id):
+        raise ValueError("thread_id must be a non-empty string when provided")
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("max_attempts must be a positive integer")
+    if not isinstance(max_files, int) or max_files <= 0:
+        raise ValueError("max_files must be a positive integer")
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+
+    out = register_drop_folder(
+        store_root,
+        name=name,
+        folder_path=folder_path,
+        title=title,
+        objective=objective,
+        constraints=constraints,
+        thread_id=thread_id,
+        max_attempts=max_attempts,
+        max_files=max_files,
+        max_bytes=max_bytes,
+    )
+    record("drop_folder_register")
+    return {"drop_folder": out, "metrics": snapshot()}
+
+
+def run_drop_folder_list(request: dict) -> dict:
+    store_root = request.get("store_root")
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    drop_folders = list_drop_folders(store_root)
+    record("drop_folder_list")
+    return {"drop_folders": drop_folders, "summary": _summarize_drop_folders(drop_folders), "metrics": snapshot()}
+
+
+def run_drop_folder_scan(request: dict) -> dict:
+    store_root = request.get("store_root")
+    name = request.get("name")
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if name is not None and (not isinstance(name, str) or not name):
+        raise ValueError("name must be a non-empty string when provided")
+    out = scan_drop_folders(store_root, name=name)
+    record("drop_folder_scan")
+    out["metrics"] = snapshot()
+    return out
+
+
 def run_worker_cloud_export(request: dict) -> dict:
     store_root = request.get("store_root")
     bucket = request.get("bucket")
@@ -629,6 +703,21 @@ def run_worker_cloud_replay(request: dict) -> dict:
     return {"replayed": out, "metrics": snapshot()}
 
 
+def _summarize_drop_folders(drop_folders: list[dict]) -> dict:
+    counts = Counter()
+    pending = 0
+    for item in drop_folders:
+        if not item.get("exists", True):
+            counts["missing_count"] += 1
+        if item.get("pending_change_count", 0):
+            pending += 1
+    return {
+        "count": len(drop_folders),
+        "missing_count": counts["missing_count"],
+        "pending_count": pending,
+    }
+
+
 def get_metrics() -> dict:
     return {"metrics": snapshot()}
 
@@ -797,6 +886,31 @@ def main(argv: list[str] | None = None) -> int:
     research_import_folder_parser.add_argument("--max-attempts", type=int, default=3)
     research_import_folder_parser.add_argument("--max-files", type=int, default=64)
     research_import_folder_parser.add_argument("--max-bytes", type=int, default=1000000)
+    drop_folder_register_parser = sub.add_parser(
+        "drop-folder-register",
+        help="Register a local folder for explicit zero-cost intake into the private hub",
+    )
+    drop_folder_register_parser.add_argument("--store-root", required=True)
+    drop_folder_register_parser.add_argument("--name", required=True)
+    drop_folder_register_parser.add_argument("--folder", required=True)
+    drop_folder_register_parser.add_argument("--title", required=True)
+    drop_folder_register_parser.add_argument("--objective", required=True)
+    drop_folder_register_parser.add_argument("--constraint", action="append", default=[])
+    drop_folder_register_parser.add_argument("--thread-id")
+    drop_folder_register_parser.add_argument("--max-attempts", type=int, default=3)
+    drop_folder_register_parser.add_argument("--max-files", type=int, default=64)
+    drop_folder_register_parser.add_argument("--max-bytes", type=int, default=1000000)
+    drop_folder_list_parser = sub.add_parser(
+        "drop-folder-list",
+        help="List registered local intake folders for the private hub",
+    )
+    drop_folder_list_parser.add_argument("--store-root", required=True)
+    drop_folder_scan_parser = sub.add_parser(
+        "drop-folder-scan",
+        help="Explicitly scan one or more registered local intake folders",
+    )
+    drop_folder_scan_parser.add_argument("--store-root", required=True)
+    drop_folder_scan_parser.add_argument("--name")
     ingest_parser = sub.add_parser("ingest-chat-export", help="Ingest a local chat export into the worker store")
     ingest_parser.add_argument("--input", required=True)
     ingest_parser.add_argument("--store-root", required=True)
@@ -1008,6 +1122,27 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
             )
+        elif args.command == "drop-folder-register":
+            _emit(
+                run_drop_folder_register(
+                    {
+                        "store_root": args.store_root,
+                        "name": args.name,
+                        "folder_path": args.folder,
+                        "title": args.title,
+                        "objective": args.objective,
+                        "constraints": args.constraint,
+                        "thread_id": args.thread_id,
+                        "max_attempts": args.max_attempts,
+                        "max_files": args.max_files,
+                        "max_bytes": args.max_bytes,
+                    }
+                )
+            )
+        elif args.command == "drop-folder-list":
+            _emit(run_drop_folder_list({"store_root": args.store_root}))
+        elif args.command == "drop-folder-scan":
+            _emit(run_drop_folder_scan({"store_root": args.store_root, "name": args.name}))
         elif args.command == "ingest-chat-export":
             _emit(
                 run_ingest_chat_export(

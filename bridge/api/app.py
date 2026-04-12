@@ -8,6 +8,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from bridge.cli import (
     get_health,
     get_metrics,
+    run_drop_folder_list,
+    run_drop_folder_register,
+    run_drop_folder_scan,
     run_federate,
     run_research_writing_assemble,
     run_research_writing_bootstrap,
@@ -24,7 +27,13 @@ from bridge.cli import (
     run_worker,
     run_worker_manifests,
 )
-from bridge.operator import render_inbox_page, render_operator_console, render_project_board, render_project_detail
+from bridge.operator import (
+    render_drop_folder_page,
+    render_inbox_page,
+    render_operator_console,
+    render_project_board,
+    render_project_detail,
+)
 from bridge.workers import FileTaskStore
 
 app = FastAPI(title="Cloud Bridge API", version="0.1.1")
@@ -119,6 +128,40 @@ def inbox_reclaim_endpoint() -> dict:
 def inbox_maintain_endpoint() -> dict:
     try:
         return run_worker_store_maintain({"store_root": _operator_store_root()})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/drop-folders")
+def drop_folder_list_endpoint() -> dict:
+    try:
+        return run_drop_folder_list({"store_root": _operator_store_root()})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/drop-folders/view", response_class=HTMLResponse)
+def drop_folder_view_endpoint() -> HTMLResponse:
+    try:
+        state = run_drop_folder_list({"store_root": _operator_store_root()})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return HTMLResponse(render_drop_folder_page(state))
+
+
+@app.post("/drop-folders/register")
+def drop_folder_register_endpoint(request: dict) -> dict:
+    try:
+        request = {"store_root": _operator_store_root(), **request}
+        return run_drop_folder_register(request)
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/drop-folders/scan")
+def drop_folder_scan_endpoint(name: str | None = None) -> dict:
+    try:
+        return run_drop_folder_scan({"store_root": _operator_store_root(), "name": name})
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
