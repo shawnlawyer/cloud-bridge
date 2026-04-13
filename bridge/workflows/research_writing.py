@@ -210,23 +210,22 @@ def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
 
 def list_research_writing(store_root: str | Path) -> list[dict]:
     store = FileTaskStore(store_root)
-    packet_artifacts_by_owner: dict[str, object] = {}
-    for artifact in store.list_artifacts():
-        if artifact.name != _PACKET_NAME or not artifact.owner_id.startswith("workflow:"):
-            continue
-        current = packet_artifacts_by_owner.get(artifact.owner_id)
-        if current is None or artifact.created_at > current.created_at:
-            packet_artifacts_by_owner[artifact.owner_id] = artifact
-
+    owner_ids = sorted(
+        {
+            artifact.owner_id
+            for artifact in store.list_artifacts()
+            if artifact.name == _PACKET_NAME and artifact.owner_id.startswith("workflow:")
+        }
+    )
     workflows = []
-    for owner_id, artifact in packet_artifacts_by_owner.items():
-        packet = _load_packet(store, [artifact])
+    for owner_id in owner_ids:
+        workflow_artifacts = list(store.list_artifacts(owner_id=owner_id))
+        packet = _load_packet(store, workflow_artifacts)
         thread_id = packet.get("thread_id")
         if not thread_id:
             continue
         tasks = [record for record in store.list_tasks() if record.task.thread_id == thread_id]
         counts = Counter(record.status for record in tasks)
-        workflow_artifacts = list(store.list_artifacts(owner_id=owner_id))
         latest_draft = _latest_artifact(workflow_artifacts, lambda item: item.name.endswith(".md"))
         workflows.append(
             {
@@ -495,13 +494,21 @@ def _build_workflow_tasks(
 
 
 def _load_packet(store: FileTaskStore, artifacts: list) -> dict:
-    packet_artifact = _latest_artifact(artifacts, lambda artifact: artifact.name == _PACKET_NAME)
-    if packet_artifact is None:
+    packet_artifacts = [artifact for artifact in artifacts if artifact.name == _PACKET_NAME]
+    if not packet_artifacts:
         return {}
-    try:
-        return json.loads(store.read_artifact_text(packet_artifact.artifact_id))
-    except (json.JSONDecodeError, KeyError):
-        return {}
+    packets = []
+    for artifact in packet_artifacts:
+        try:
+            packet = json.loads(store.read_artifact_text(artifact.artifact_id))
+        except (json.JSONDecodeError, KeyError):
+            continue
+        created_at = packet.get("created_at") or artifact.created_at
+        packets.append((created_at, packet))
+    if packets:
+        packets.sort(key=lambda item: item[0])
+        return packets[-1][1]
+    return {}
 
 
 def _read_excerpt(path: Path, max_chars: int = 1200) -> str:
@@ -529,4 +536,4 @@ def _revision_token() -> str:
 
 
 def _utc_now_text() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

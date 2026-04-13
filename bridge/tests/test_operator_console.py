@@ -81,6 +81,7 @@ class TestOperatorConsole(unittest.TestCase):
 
         self.assertIn("Create Project", board)
         self.assertIn("Open project", board)
+        self.assertIn("Run Thread", detail)
         self.assertIn("Run Dispatch", detail)
         self.assertIn("Steward approved=True", detail)
 
@@ -128,6 +129,7 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("Run Next 4", inbox)
         self.assertIn("Reclaim Expired", inbox)
         self.assertIn("Maintain Store", inbox)
+        self.assertIn("Run Thread", inbox)
         self.assertIn("Steward", inbox)
 
     def test_render_drop_folder_page_includes_register_and_scan_actions(self):

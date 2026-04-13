@@ -150,10 +150,11 @@ def render_project_detail(project: dict) -> str:
   <p><a href=\"/projects/research-writing/board\">Back to projects</a> · <a href=\"/drop-folders/view\">Drop folders</a></p>
   <h1>{escape(project.get('title', project['thread_id']))}</h1>
   <p class=\"muted\"><code>{escape(project['thread_id'])}</code></p>
-  <div class=\"card\">
+    <div class=\"card\">
     <p>{escape(project.get('objective', ''))}</p>
     <div>{_render_task_chips(project.get('task_counts', {}))}</div>
     <p>
+      <button id=\"run-thread\">Run Thread</button>
       <button id=\"dispatch\">Run Dispatch</button>
       <button id=\"assemble\">Assemble Draft</button>
     </p>
@@ -191,6 +192,7 @@ def render_project_detail(project: dict) -> str:
       status.textContent = JSON.stringify(body, null, 2);
       window.location.reload();
     }}
+    document.getElementById('run-thread').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/run?dispatch_limit=8&pass_limit=4`));
     document.getElementById('dispatch').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/dispatch?limit=4`));
     document.getElementById('assemble').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/assemble`));
   </script>

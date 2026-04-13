@@ -405,6 +405,70 @@ def run_research_writing_assemble(request: dict) -> dict:
     return out
 
 
+def run_research_writing_run(request: dict) -> dict:
+    store_root = request.get("store_root")
+    thread_id = request.get("thread_id")
+    dispatch_limit = request.get("dispatch_limit", 8)
+    pass_limit = request.get("pass_limit", 4)
+    auto_assemble = request.get("auto_assemble", True)
+    artifact_name = request.get("name")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("thread_id must be a non-empty string")
+    if not isinstance(dispatch_limit, int) or dispatch_limit <= 0:
+        raise ValueError("dispatch_limit must be a positive integer")
+    if not isinstance(pass_limit, int) or pass_limit <= 0:
+        raise ValueError("pass_limit must be a positive integer")
+    if not isinstance(auto_assemble, bool):
+        raise ValueError("auto_assemble must be a boolean")
+    if artifact_name is not None and (not isinstance(artifact_name, str) or not artifact_name):
+        raise ValueError("name must be a non-empty string when provided")
+
+    passes = []
+    processed_total = 0
+    reclaimed_total = 0
+    for index in range(pass_limit):
+        dispatch = dispatch_tasks(store_root, limit=dispatch_limit, thread_id=thread_id)
+        pass_result = {
+            "pass_index": index + 1,
+            "processed_count": dispatch["processed_count"],
+            "reclaimed_count": dispatch["reclaimed_count"],
+            "blocked_count": len(dispatch.get("blocked", [])),
+        }
+        passes.append(pass_result)
+        processed_total += dispatch["processed_count"]
+        reclaimed_total += dispatch["reclaimed_count"]
+        if dispatch["processed_count"] == 0:
+            break
+
+    status = describe_research_writing(store_root, thread_id)
+    assembled = None
+    if auto_assemble and _research_writing_ready_for_assemble(status):
+        assembled = assemble_research_writing(store_root, thread_id, name=artifact_name)
+        status = describe_research_writing(store_root, thread_id)
+
+    events = ["research_writing_run"]
+    if processed_total:
+        events.append("worker_dispatch")
+    if reclaimed_total:
+        events.append("worker_reclaim")
+    if assembled is not None:
+        events.append("research_writing_assemble")
+    record_many(events)
+    return {
+        "thread_id": thread_id,
+        "processed_count": processed_total,
+        "reclaimed_count": reclaimed_total,
+        "pass_count": len(passes),
+        "passes": passes,
+        "assembled": assembled,
+        "status": status,
+        "metrics": snapshot(),
+    }
+
+
 def run_research_writing_import_folder(request: dict) -> dict:
     store_root = request.get("store_root")
     folder_path = request.get("folder_path")
@@ -718,6 +782,18 @@ def _summarize_drop_folders(drop_folders: list[dict]) -> dict:
     }
 
 
+def _research_writing_ready_for_assemble(status: dict) -> bool:
+    required_workers = {"guardian", "archivist", "planner", "scribe"}
+    completed_workers = {
+        task["task"]["worker_id"]
+        for task in status.get("tasks", [])
+        if task.get("result")
+    }
+    active_statuses = {"pending", "claimed"}
+    has_active_tasks = any(task.get("status") in active_statuses for task in status.get("tasks", []))
+    return required_workers.issubset(completed_workers) and not has_active_tasks
+
+
 def get_metrics() -> dict:
     return {"metrics": snapshot()}
 
@@ -873,6 +949,16 @@ def main(argv: list[str] | None = None) -> int:
     research_assemble_parser.add_argument("--store-root", required=True)
     research_assemble_parser.add_argument("--thread-id", required=True)
     research_assemble_parser.add_argument("--name")
+    research_run_parser = sub.add_parser(
+        "research-writing-run",
+        help="Run a bounded research/writing thread and auto-assemble when ready",
+    )
+    research_run_parser.add_argument("--store-root", required=True)
+    research_run_parser.add_argument("--thread-id", required=True)
+    research_run_parser.add_argument("--dispatch-limit", type=int, default=8)
+    research_run_parser.add_argument("--pass-limit", type=int, default=4)
+    research_run_parser.add_argument("--no-auto-assemble", action="store_true")
+    research_run_parser.add_argument("--name")
     research_import_folder_parser = sub.add_parser(
         "research-writing-import-folder",
         help="Create a bounded research/writing project from a local folder",
@@ -1102,6 +1188,19 @@ def main(argv: list[str] | None = None) -> int:
                     {
                         "store_root": args.store_root,
                         "thread_id": args.thread_id,
+                        "name": args.name,
+                    }
+                )
+            )
+        elif args.command == "research-writing-run":
+            _emit(
+                run_research_writing_run(
+                    {
+                        "store_root": args.store_root,
+                        "thread_id": args.thread_id,
+                        "dispatch_limit": args.dispatch_limit,
+                        "pass_limit": args.pass_limit,
+                        "auto_assemble": not args.no_auto_assemble,
                         "name": args.name,
                     }
                 )

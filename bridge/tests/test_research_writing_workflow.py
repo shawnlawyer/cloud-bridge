@@ -7,6 +7,7 @@ from bridge.cli import (
     run_research_writing_bootstrap,
     run_research_writing_import_folder,
     run_research_writing_list,
+    run_research_writing_run,
     run_research_writing_status,
     run_worker_dispatch,
 )
@@ -87,6 +88,35 @@ class TestResearchWritingWorkflow(unittest.TestCase):
             self.assertTrue(imported["skipped"])
             self.assertEqual(len(listed["workflows"]), 1)
             self.assertEqual(listed["workflows"][0]["title"], "Folder Import")
+
+    def test_run_thread_dispatches_and_auto_assembles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir, "source.md")
+            source_path.write_text("private hub note", encoding="utf-8")
+
+            boot = run_research_writing_bootstrap(
+                {
+                    "store_root": temp_dir,
+                    "title": "Auto Runner",
+                    "objective": "Run the whole bounded workflow in one action.",
+                    "source_paths": [str(source_path)],
+                    "constraints": ["local only", "zero cost"],
+                }
+            )
+
+            run = run_research_writing_run(
+                {
+                    "store_root": temp_dir,
+                    "thread_id": boot["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            self.assertEqual(run["processed_count"], 4)
+            self.assertIsNotNone(run["assembled"])
+            self.assertEqual(run["status"]["task_counts"]["done"], 4)
 
 
 if __name__ == "__main__":

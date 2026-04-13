@@ -16,6 +16,7 @@ from bridge.cli import (
     run_research_writing_bootstrap,
     run_research_writing_import_folder,
     run_research_writing_list,
+    run_research_writing_run,
     run_research_writing_status,
     run_worker_artifact_list,
     run_worker_dispatch,
@@ -230,6 +231,26 @@ def research_writing_dispatch_endpoint(thread_id: str, limit: int = Query(defaul
 def research_writing_assemble_endpoint(thread_id: str) -> dict:
     try:
         return run_research_writing_assemble({"store_root": _operator_store_root(), "thread_id": thread_id})
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/projects/research-writing/{thread_id}/run")
+def research_writing_run_endpoint(
+    thread_id: str,
+    dispatch_limit: int = Query(default=8, ge=1, le=64),
+    pass_limit: int = Query(default=4, ge=1, le=16),
+) -> dict:
+    try:
+        return run_research_writing_run(
+            {
+                "store_root": _operator_store_root(),
+                "thread_id": thread_id,
+                "dispatch_limit": dispatch_limit,
+                "pass_limit": pass_limit,
+                "auto_assemble": True,
+            }
+        )
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

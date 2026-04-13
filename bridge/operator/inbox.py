@@ -103,6 +103,9 @@ def render_inbox_page(state: dict) -> str:
     document.getElementById('dispatch-global').addEventListener('click', () => post('/inbox/dispatch?limit=4'));
     document.getElementById('reclaim').addEventListener('click', () => post('/inbox/reclaim'));
     document.getElementById('maintain').addEventListener('click', () => post('/inbox/maintain'));
+    for (const button of document.querySelectorAll('[data-thread-run]')) {{
+      button.addEventListener('click', () => post(`/projects/research-writing/${{encodeURIComponent(button.dataset.threadRun)}}/run?dispatch_limit=8&pass_limit=4`));
+    }}
     for (const button of document.querySelectorAll('[data-thread-dispatch]')) {{
       button.addEventListener('click', () => post(`/inbox/dispatch?limit=4&thread_id=${{encodeURIComponent(button.dataset.threadDispatch)}}`));
     }}
@@ -117,9 +120,11 @@ def _thread_row(item: dict) -> str:
         for key, value in sorted(item.get("task_counts", {}).items())
     ) or '<span class="chip">none</span>'
     open_link = f'<a href="{escape(item["project_url"])}">Open</a>' if item.get("project_url") else "-"
-    action_button = (
-        f'<button data-thread-dispatch="{escape(item["thread_id"])}">Run 4</button>' if item.get("ready_count") else "-"
-    )
+    action_parts = []
+    if item.get("ready_count"):
+        action_parts.append(f'<button data-thread-run="{escape(item["thread_id"])}">Run Thread</button>')
+        action_parts.append(f'<button data-thread-dispatch="{escape(item["thread_id"])}">Run 4</button>')
+    action_button = "".join(action_parts) or "-"
     return (
         "<tr>"
         f"<td><strong>{escape(item['title'])}</strong><br><span class=\"muted\"><code>{escape(item['thread_id'])}</code></span></td>"
