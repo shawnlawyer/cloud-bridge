@@ -23,6 +23,8 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     snapshot = home.get("todaySnapshot", {})
     current_context = home.get("currentContext", {})
     last_worked = home.get("lastWorked", {})
+    steward_last_worked = last_worked.get("steward") or _steward_last_worked_fallback(last_worked.get("notification"), one_next_step)
+    resume_last_worked = last_worked.get("resume") or _resume_last_worked_fallback(resume_target, last_worked.get("workerEvent"))
     schedule = home.get("schedule", {})
     continuity = (home.get("continuity") or {}).get("records", [])
     approval_summaries = (approvals or {}).get("summaries", [])
@@ -214,8 +216,8 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
       <div class="strip-grid">
         {_last_worked_item('Task', last_worked.get('task'))}
         {_last_worked_item('Room', last_worked.get('room'))}
-        {_last_worked_item('Notification', last_worked.get('notification'))}
-        {_last_worked_item('Worker', last_worked.get('workerEvent'))}
+        {_last_worked_item('Steward', steward_last_worked)}
+        {_last_worked_item('Resume', resume_last_worked)}
       </div>
     </section>
     <div class="split">
@@ -464,6 +466,7 @@ def _resume_panel(resume_target: dict) -> str:
         f'<p class="resume-why">{escape(str(resume_target.get("whyNow", "This is the clearest thread to resume next.")))}</p>'
         f'{_record_actions("resume", "", resume_target.get("actions", []))}'
         '<div class="resume-facts">'
+        f'{_resume_signal("Review", _review_context(resume_target.get("reviewReceipt"), resume_target.get("reviewStatus")))}'
         f'{_resume_signal("Latest artifact", _artifact_context(resume_target.get("latestArtifact")))}'
         f'{_resume_signal("Latest result", _result_context(resume_target.get("latestResult")))}'
         f'{_resume_signal("Worker event", _event_context(resume_target.get("latestWorkerEvent")))}'
@@ -489,9 +492,15 @@ def _resume_image(asset: dict | None, alt: str) -> str:
 def _resume_state_label(resume_target: dict | None) -> str:
     if not resume_target:
         return 'Quiet'
-    visual_state = str(resume_target.get('visualState', 'quiet')).replace('-', ' ')
+    state = str(resume_target.get('state', 'quiet'))
+    review_status = str(resume_target.get('reviewStatus', 'none'))
     if resume_target.get('needsHumanReview'):
-        return f'{visual_state.title()} · human look'
+        return 'Ready for review'
+    if state == 'reviewed':
+        return 'Reviewed'
+    if state == 'ready' and review_status == 'reviewed':
+        return 'Ready to continue'
+    visual_state = str(resume_target.get('visualState', 'quiet')).replace('-', ' ')
     return visual_state.title()
 
 
@@ -503,6 +512,15 @@ def _artifact_context(artifact: dict | None) -> str:
     if not artifact:
         return 'No saved artifact yet.'
     return f"{artifact.get('name', 'Artifact')} · {artifact.get('mediaType', 'unknown type')}"
+
+
+def _review_context(review_receipt: dict | None, review_status: str | None) -> str:
+    if review_receipt:
+        created_at = review_receipt.get('createdAt') or 'recently'
+        return f"Reviewed locally · {created_at}"
+    if review_status == 'pending':
+        return 'Still waiting for a local review.'
+    return 'No review receipt yet.'
 
 
 def _result_context(result: dict | None) -> str:
@@ -597,14 +615,89 @@ def _schedule_summary(schedule: dict | None) -> str:
     )
 
 
+def _steward_last_worked_fallback(notification: dict | None, one_next_step: dict) -> dict | None:
+    source = notification or one_next_step
+    if not source:
+        return None
+
+    context = source.get('context')
+    kind = source.get('kind') or one_next_step.get('kind')
+    if not context and kind:
+        context = f"Lane: {str(kind).replace('_', ' ')}"
+
+    actions = list(source.get('actions') or [])
+    if not actions:
+        actions.append({"label": "Open notifications", "href": "/steward/view/notification_events", "tone": "secondary"})
+
+    return {
+        **source,
+        "label": source.get('title') or source.get('text') or source.get('label') or "Current steward guidance",
+        "detail": source.get('detail') or one_next_step.get('detail') or "Current next step.",
+        "context": context,
+        "actions": actions,
+    }
+
+
+def _resume_last_worked_fallback(resume_target: dict | None, worker_event: dict | None) -> dict | None:
+    if not resume_target:
+        if not worker_event:
+            return None
+        return {
+            "label": str(worker_event.get('event') or "Worker").replace('_', ' ').title(),
+            "detail": worker_event.get('detail') or "Recent worker movement.",
+            "context": "Most recent worker movement.",
+            "status": "worker",
+            "actions": [{"label": "Open continuity", "href": "/steward/view/continuity", "tone": "secondary"}],
+        }
+
+    actions = list(resume_target.get('actions') or [])
+    if not actions and resume_target.get('projectUrl'):
+        actions.append({"label": "Open thread", "href": resume_target['projectUrl'], "tone": "secondary"})
+    if not actions:
+        actions.append({"label": "Open continuity", "href": "/steward/view/continuity", "tone": "secondary"})
+
+    latest_artifact = resume_target.get('latestArtifact') or {}
+    latest_result = resume_target.get('latestResult') or {}
+    latest_event = resume_target.get('latestWorkerEvent') or worker_event or {}
+    context = None
+    if latest_artifact.get('name'):
+        context = f"Latest: {latest_artifact['name']}"
+    elif latest_result.get('summary'):
+        context = f"Latest result: {latest_result['summary']}"
+    elif latest_event.get('detail'):
+        context = str(latest_event['detail'])
+    elif resume_target.get('whyNow'):
+        context = str(resume_target['whyNow'])
+
+    return {
+        "label": resume_target.get('title') or "Resume work",
+        "detail": (resume_target.get('nextAction') or {}).get('text')
+        or resume_target.get('whyNow')
+        or "Open the thread and keep it moving.",
+        "context": context,
+        "status": resume_target.get('resumeMode') or resume_target.get('visualState'),
+        "actions": actions[:2],
+    }
+
+
 def _last_worked_item(label: str, item: dict | None) -> str:
     if not item:
         return f'<div class="strip-item"><strong>{escape(label)}</strong><br><span class="muted">Nothing recent.</span></div>'
     title = item.get('label') or item.get('title') or item.get('event') or 'Recent'
     detail = item.get('detail') or item.get('status') or 'Recent activity.'
+    context = item.get('context')
+    status = item.get('status')
+    meta = []
+    if context:
+        meta.append(f'<span class="muted">{escape(str(context))}</span>')
+    if status and str(status) != str(detail):
+        meta.append(f'<span class="muted">{escape(str(status).replace("_", " ").replace("-", " ").title())}</span>')
+    meta_html = ''.join(f'<br>{line}' for line in meta)
+    actions_html = _record_actions('last-worked', str(item.get('ref', '')), item.get('actions', []))
     return (
         f'<div class="strip-item"><strong>{escape(label)}</strong><br>'
-        f'{escape(str(title))}<br><span class="muted">{escape(str(detail))}</span></div>'
+        f'{escape(str(title))}<br><span class="muted">{escape(str(detail))}</span>'
+        f'{meta_html}{actions_html}</div>'
     )
 
 

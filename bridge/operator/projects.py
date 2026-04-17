@@ -127,6 +127,10 @@ def render_project_detail(project: dict) -> str:
         for artifact in project.get("artifacts", [])
     ) or '<tr><td colspan="3">none</td></tr>'
     payload = _script_json({"thread_id": project["thread_id"]})
+    latest_draft_artifact_id = project.get("latest_draft_artifact_id")
+    latest_review_receipt = project.get("latest_review_receipt") or {}
+    review_status = "reviewed" if latest_review_receipt else ("pending" if latest_draft_artifact_id else "none")
+    review_summary = _review_summary(latest_draft_artifact_id, latest_review_receipt)
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -153,10 +157,13 @@ def render_project_detail(project: dict) -> str:
     <div class=\"card\">
     <p>{escape(project.get('objective', ''))}</p>
     <div>{_render_task_chips(project.get('task_counts', {}))}</div>
+    <p class=\"muted\">{escape(review_summary)}</p>
     <p>
       <button id=\"run-thread\">Run Thread</button>
       <button id=\"dispatch\">Run Dispatch</button>
       <button id=\"assemble\">Assemble Draft</button>
+      {"<button id=\"mark-reviewed\">Mark Reviewed</button>" if latest_draft_artifact_id and not latest_review_receipt else ""}
+      {"<button id=\"continue-thread\">Continue Thread</button>" if latest_review_receipt else ""}
     </p>
     <pre id=\"status\" class=\"muted\"></pre>
   </div>
@@ -195,6 +202,12 @@ def render_project_detail(project: dict) -> str:
     document.getElementById('run-thread').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/run?dispatch_limit=8&pass_limit=4`));
     document.getElementById('dispatch').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/dispatch?limit=4`));
     document.getElementById('assemble').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/assemble`));
+    if (document.getElementById('mark-reviewed')) {{
+      document.getElementById('mark-reviewed').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/review?artifact_id={escape(str(latest_draft_artifact_id or ""))}`));
+    }}
+    if (document.getElementById('continue-thread')) {{
+      document.getElementById('continue-thread').addEventListener('click', () => runAction(`/projects/research-writing/${{encodeURIComponent(window.__CLOUD_BRIDGE_PROJECT__.thread_id)}}/refresh`));
+    }}
   </script>
 </body>
 </html>"""
@@ -222,6 +235,14 @@ def _task_note(task: dict) -> str:
     if "steps" in output:
         return f"{len(output.get('steps', []))} planned steps"
     return "-"
+
+
+def _review_summary(latest_draft_artifact_id: str | None, latest_review_receipt: dict) -> str:
+    if latest_review_receipt:
+        return f"Latest draft reviewed locally at {latest_review_receipt.get('created_at', 'a recent time')}."
+    if latest_draft_artifact_id:
+        return "Latest draft is waiting for a local review receipt."
+    return "No draft has been produced yet."
 
 
 def _truncate(value: str, limit: int) -> str:

@@ -191,8 +191,15 @@ def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
     owner_id = f"workflow:{thread_id}"
     tasks = [record for record in store.list_tasks() if record.task.thread_id == thread_id]
     artifacts = list(store.list_artifacts(owner_id=owner_id))
+    review_receipts = list(store.list_review_receipts(thread_id=thread_id))
     counts = Counter(record.status for record in tasks)
     packet = _load_packet(store, artifacts)
+    latest_draft = _latest_artifact(artifacts, lambda item: item.name != _PACKET_NAME)
+    latest_review_receipt = None
+    if latest_draft is not None:
+        matches = [receipt for receipt in review_receipts if receipt.artifact_id == latest_draft.artifact_id]
+        if matches:
+            latest_review_receipt = max(matches, key=lambda item: item.created_at)
     return {
         "thread_id": thread_id,
         "owner_id": owner_id,
@@ -205,6 +212,10 @@ def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
         "tasks": [record.to_dict() for record in tasks],
         "artifact_count": len(artifacts),
         "artifacts": [artifact.to_dict() for artifact in artifacts],
+        "latest_draft_artifact_id": latest_draft.artifact_id if latest_draft else None,
+        "review_receipt_count": len(review_receipts),
+        "review_receipts": [receipt.to_dict() for receipt in review_receipts],
+        "latest_review_receipt": latest_review_receipt.to_dict() if latest_review_receipt else None,
     }
 
 

@@ -14,6 +14,7 @@ from .runner import LocalWorkerRunner
 
 _TASK_STATUS_VALUES = frozenset({"pending", "claimed", "done", "failed"})
 _RECEIPT_STATUS_VALUES = frozenset({"open", "completed", "released"})
+_REVIEW_STATUS_VALUES = frozenset({"reviewed"})
 _TASK_STATUS_PRIORITY = {"pending": 0, "claimed": 1, "done": 2, "failed": 2}
 _RECEIPT_STATUS_PRIORITY = {"open": 0, "completed": 1, "released": 1}
 
@@ -133,6 +134,45 @@ class ReceiptRecord:
 
 
 @dataclass(frozen=True)
+class ReviewReceiptRecord:
+    review_ref: str
+    thread_id: str
+    artifact_id: str | None
+    result_task_id: str | None
+    status: str
+    created_at: str
+
+    def __post_init__(self) -> None:
+        if self.status not in _REVIEW_STATUS_VALUES:
+            raise ValueError(f"Unsupported review status: {self.status}")
+        if not isinstance(self.review_ref, str) or not self.review_ref:
+            raise ValueError("review_ref must be a non-empty string")
+        if not isinstance(self.thread_id, str) or not self.thread_id:
+            raise ValueError("thread_id must be a non-empty string")
+
+    def to_dict(self) -> dict:
+        return {
+            "review_ref": self.review_ref,
+            "thread_id": self.thread_id,
+            "artifact_id": self.artifact_id,
+            "result_task_id": self.result_task_id,
+            "status": self.status,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReviewReceiptRecord":
+        return cls(
+            review_ref=data["review_ref"],
+            thread_id=data["thread_id"],
+            artifact_id=data.get("artifact_id"),
+            result_task_id=data.get("result_task_id"),
+            status=data["status"],
+            created_at=data["created_at"],
+        )
+
+
+@dataclass(frozen=True)
 class ArtifactRecord:
     artifact_id: str
     owner_id: str
@@ -177,12 +217,14 @@ class FileTaskStore:
         self.lease_seconds = lease_seconds
         self.tasks_dir = self.root / "tasks"
         self.receipts_dir = self.root / "receipts"
+        self.review_receipts_dir = self.root / "review_receipts"
         self.artifacts_dir = self.root / "artifacts"
         self.artifact_files_dir = self.artifacts_dir / "files"
         self.artifact_meta_dir = self.artifacts_dir / "meta"
         self.events_path = self.root / "events.jsonl"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self.receipts_dir.mkdir(parents=True, exist_ok=True)
+        self.review_receipts_dir.mkdir(parents=True, exist_ok=True)
         self.artifact_files_dir.mkdir(parents=True, exist_ok=True)
         self.artifact_meta_dir.mkdir(parents=True, exist_ok=True)
         self.events_path.touch(exist_ok=True)
@@ -361,6 +403,65 @@ class FileTaskStore:
         records = []
         for path in sorted(self.receipts_dir.glob("*.json")):
             records.append(ReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+        return tuple(records)
+
+    def record_review_receipt(
+        self,
+        thread_id: str,
+        *,
+        artifact_id: str | None = None,
+        result_task_id: str | None = None,
+        status: str = "reviewed",
+    ) -> ReviewReceiptRecord:
+        if not isinstance(thread_id, str) or not thread_id:
+            raise ValueError("thread_id must be a non-empty string")
+        if artifact_id is not None and (not isinstance(artifact_id, str) or not artifact_id):
+            raise ValueError("artifact_id must be a non-empty string when provided")
+        if result_task_id is not None and (not isinstance(result_task_id, str) or not result_task_id):
+            raise ValueError("result_task_id must be a non-empty string when provided")
+        if status not in _REVIEW_STATUS_VALUES:
+            raise ValueError(f"Unsupported review status: {status}")
+
+        review_ref = self._build_review_ref(
+            thread_id=thread_id,
+            artifact_id=artifact_id,
+            result_task_id=result_task_id,
+            status=status,
+        )
+        path = self._review_receipt_path(review_ref)
+        if path.exists():
+            return self._load_review_receipt(review_ref)
+
+        receipt = ReviewReceiptRecord(
+            review_ref=review_ref,
+            thread_id=thread_id,
+            artifact_id=artifact_id,
+            result_task_id=result_task_id,
+            status=status,
+            created_at=_format_utc(_utc_now()),
+        )
+        self._write_review_receipt(receipt)
+        _append_jsonl(
+            self.events_path,
+            {
+                "event": "review_recorded",
+                "review_ref": receipt.review_ref,
+                "thread_id": thread_id,
+                "artifact_id": artifact_id,
+                "result_task_id": result_task_id,
+                "status": status,
+            },
+        )
+        return receipt
+
+    def list_review_receipts(self, thread_id: str | None = None) -> tuple[ReviewReceiptRecord, ...]:
+        records = []
+        for path in sorted(self.review_receipts_dir.glob("*.json")):
+            record = ReviewReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            if thread_id is not None and record.thread_id != thread_id:
+                continue
+            records.append(record)
+        records.sort(key=lambda item: (item.created_at, item.review_ref))
         return tuple(records)
 
     def write_artifact(
@@ -549,6 +650,9 @@ class FileTaskStore:
     def _receipt_path(self, receipt_id: str) -> Path:
         return self.receipts_dir / f"{receipt_id.replace(':', '__')}.json"
 
+    def _review_receipt_path(self, review_ref: str) -> Path:
+        return self.review_receipts_dir / f"{review_ref.replace(':', '__')}.json"
+
     def _artifact_meta_path(self, artifact_id: str) -> Path:
         return self.artifact_meta_dir / f"{artifact_id.replace(':', '__')}.json"
 
@@ -558,11 +662,20 @@ class FileTaskStore:
             raise KeyError("Unknown receipt")
         return ReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
+    def _load_review_receipt(self, review_ref: str) -> ReviewReceiptRecord:
+        path = self._review_receipt_path(review_ref)
+        if not path.exists():
+            raise KeyError("Unknown review receipt")
+        return ReviewReceiptRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
     def _write_task(self, record: TaskRecord) -> None:
         _write_json(self._task_path(record.task.task_id), record.to_dict())
 
     def _write_receipt(self, receipt: ReceiptRecord) -> None:
         _write_json(self._receipt_path(receipt.receipt_id), receipt.to_dict())
+
+    def _write_review_receipt(self, review_receipt: ReviewReceiptRecord) -> None:
+        _write_json(self._review_receipt_path(review_receipt.review_ref), review_receipt.to_dict())
 
     def _write_artifact(self, record: ArtifactRecord) -> None:
         _write_json(self._artifact_meta_path(record.artifact_id), record.to_dict())
@@ -583,6 +696,19 @@ class FileTaskStore:
     def _build_artifact_id(self, owner_id: str, name: str) -> str:
         digest = hashlib.sha256(f"{owner_id}:{name}:{_utc_now().isoformat()}".encode("utf-8")).hexdigest()[:12]
         return f"artifact:{digest}"
+
+    def _build_review_ref(
+        self,
+        *,
+        thread_id: str,
+        artifact_id: str | None,
+        result_task_id: str | None,
+        status: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{thread_id}:{artifact_id or ''}:{result_task_id or ''}:{status}".encode("utf-8")
+        ).hexdigest()[:12]
+        return f"review:{digest}"
 
     def _prune_task_status(self, status: str, keep: int) -> list[str]:
         matches = []

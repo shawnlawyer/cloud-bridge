@@ -185,9 +185,31 @@ class TestOperatorConsole(unittest.TestCase):
                     "latestState": {"state": "activated", "detail": "Ready to move."},
                 },
                 "lastWorked": {
-                    "task": {"label": "Kitchen reset", "detail": "load dishwasher"},
-                    "room": {"label": "Kitchen", "detail": "surfaces"},
-                    "notification": {"title": "Continue with Kitchen: trash.", "detail": "Current next step."},
+                    "task": {
+                        "label": "Kitchen reset",
+                        "detail": "load dishwasher",
+                        "context": "Next: wipe counters",
+                        "actions": [{"label": "Open tasks", "href": "/steward/view/tasks"}],
+                    },
+                    "room": {
+                        "label": "Kitchen",
+                        "detail": "surfaces",
+                        "context": "Mode: standard",
+                        "actions": [{"label": "Open rooms", "href": "/steward/view/rooms"}],
+                    },
+                    "steward": {
+                        "label": "Continue with Kitchen: trash.",
+                        "detail": "Current next step.",
+                        "context": "Lane: room recovery",
+                        "actions": [{"label": "Open notifications", "href": "/steward/view/notification_events"}],
+                    },
+                    "resume": {
+                        "label": "Alpha Project",
+                        "detail": "Open the thread and keep it moving.",
+                        "context": "Latest: alpha-draft.md",
+                        "status": "review",
+                        "actions": [{"label": "Open thread", "href": "/projects/research-writing/research:alpha/view"}],
+                    },
                     "workerEvent": {"event": "worker_dispatch", "detail": "task_id=task-plan-1"},
                 },
                 "continuity": {
@@ -229,12 +251,16 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("Continue Work", html)
         self.assertIn("Run follow-ups", html)
         self.assertIn("Alpha Project", html)
+        self.assertIn("Steward", html)
+        self.assertIn("Resume", html)
+        self.assertIn("Open tasks", html)
+        self.assertIn("Latest: alpha-draft.md", html)
         self.assertIn("Rhythm", html)
         self.assertIn("Run heartbeat", html)
         self.assertIn("Run morning", html)
         self.assertIn("Approve", html)
         self.assertIn("Last Worked", html)
-        self.assertIn("worker_dispatch", html)
+        self.assertIn("Open notifications", html)
 
     def test_render_steward_lane_includes_summaries_and_records(self):
         html = render_steward_lane(

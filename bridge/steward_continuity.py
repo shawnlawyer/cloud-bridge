@@ -17,6 +17,9 @@ def build_continuity_payload(store_root: str, task_limit: int = 20, event_limit:
     store = FileTaskStore(store_root)
     task_records = {record.task.task_id: record.to_dict() for record in store.list_tasks()}
     receipt_records = {record.receipt_id: record.to_dict() for record in store.list_receipts()}
+    review_receipt_records: dict[str, list[dict]] = {}
+    for record in store.list_review_receipts():
+        review_receipt_records.setdefault(record.thread_id, []).append(record.to_dict())
     recent_events = store.recent_events(limit=event_limit)
     workflow_cache: dict[str, dict | None] = {}
 
@@ -26,6 +29,7 @@ def build_continuity_payload(store_root: str, task_limit: int = 20, event_limit:
             item,
             task_records=task_records,
             receipt_records=receipt_records,
+            review_receipt_records=review_receipt_records,
             recent_events=recent_events,
             workflow_cache=workflow_cache,
         )
@@ -62,6 +66,7 @@ def _thread_record(
     *,
     task_records: dict[str, dict],
     receipt_records: dict[str, dict],
+    review_receipt_records: dict[str, list[dict]],
     recent_events: list[dict],
     workflow_cache: dict[str, dict | None],
 ) -> dict:
@@ -78,11 +83,25 @@ def _thread_record(
     )
     latest_result = _latest_result(workflow, latest_event)
     latest_artifact = _latest_artifact(workflow)
-    state = _thread_state(item, latest_result)
-    needs_human_review = _needs_human_review(item, state=state, latest_result=latest_result, latest_artifact=latest_artifact)
+    review_receipt = _latest_review_receipt(
+        thread_id,
+        latest_artifact=latest_artifact,
+        latest_result=latest_result,
+        review_receipt_records=review_receipt_records,
+    )
+    review_status = _review_status(review_receipt, latest_artifact=latest_artifact, latest_result=latest_result)
+    state = _thread_state(item, latest_result, latest_artifact=latest_artifact, review_status=review_status)
+    needs_human_review = _needs_human_review(
+        item,
+        state=state,
+        latest_result=latest_result,
+        latest_artifact=latest_artifact,
+        review_status=review_status,
+    )
     visual_state = _visual_state(
         state,
         needs_human_review,
+        review_status=review_status,
         latest_result=latest_result,
         latest_artifact=latest_artifact,
     )
@@ -91,10 +110,24 @@ def _thread_record(
         encoded_thread=encoded_thread,
         project_url=item.get("project_url"),
         latest_artifact=latest_artifact,
+        latest_result=latest_result,
         state=state,
+        review_status=review_status,
     )
-    next_action = _next_action(item, state=state, actions=actions, latest_artifact=latest_artifact)
-    why_now = _why_now(item, state=state, latest_result=latest_result, latest_artifact=latest_artifact)
+    next_action = _next_action(
+        item,
+        state=state,
+        actions=actions,
+        latest_artifact=latest_artifact,
+        review_status=review_status,
+    )
+    why_now = _why_now(
+        item,
+        state=state,
+        latest_result=latest_result,
+        latest_artifact=latest_artifact,
+        review_status=review_status,
+    )
     detail = _detail_text(why_now, latest_artifact=latest_artifact, latest_result=latest_result)
     resume_score = _resume_score(
         item,
@@ -104,6 +137,7 @@ def _thread_record(
         state=state,
         needs_human_review=needs_human_review,
         event_recency=event_recency,
+        review_status=review_status,
     )
 
     record = {
@@ -122,10 +156,13 @@ def _thread_record(
             latest_result=latest_result,
             latest_artifact=latest_artifact,
             needs_human_review=needs_human_review,
+            review_status=review_status,
         ),
         "latestWorkerEvent": latest_event,
         "latestArtifact": latest_artifact,
         "latestResult": latest_result,
+        "reviewReceipt": review_receipt,
+        "reviewStatus": review_status,
         "needsHumanReview": needs_human_review,
         "actions": actions,
         "visualState": visual_state,
@@ -145,19 +182,27 @@ def _workflow_state(store_root: str, thread_id: str, workflow_cache: dict[str, d
     return workflow
 
 
-def _thread_state(item: dict, latest_result: dict | None) -> str:
+def _thread_state(
+    item: dict,
+    latest_result: dict | None,
+    *,
+    latest_artifact: dict | None,
+    review_status: str,
+) -> str:
     if item.get("blocked_count"):
         return "blocked"
     if item.get("failed_count"):
         return "failed"
     if item.get("expired_count"):
         return "review-needed"
-    if latest_result and latest_result.get("needsReview"):
+    if latest_result and latest_result.get("needsReview") and review_status != "reviewed":
         return "review-needed"
     if item.get("ready_count"):
         return "ready"
     if item.get("claimed_count"):
         return "running"
+    if review_status == "reviewed" and (latest_artifact or latest_result):
+        return "reviewed"
     if item.get("task_counts", {}).get("done"):
         return "done"
     return "quiet"
@@ -169,9 +214,20 @@ def _thread_actions(
     encoded_thread: str,
     project_url: str | None,
     latest_artifact: dict | None,
+    latest_result: dict | None,
     state: str,
+    review_status: str,
 ) -> list[dict]:
     actions: list[dict] = []
+
+    if review_status == "reviewed" and project_url and state == "reviewed":
+        actions.append(
+            {
+                "label": "Continue thread",
+                "tone": "primary",
+                "postUrl": f"/projects/research-writing/{encoded_thread}/refresh",
+            }
+        )
 
     if latest_artifact and latest_artifact.get("href"):
         actions.append(
@@ -179,6 +235,18 @@ def _thread_actions(
                 "label": "Open latest result",
                 "tone": "primary" if state in {"done", "review-needed"} else "secondary",
                 "href": latest_artifact["href"],
+            }
+        )
+
+    if latest_artifact and review_status != "reviewed":
+        query = [f"artifact_id={quote(latest_artifact['artifactId'], safe='')}"]
+        if latest_result and latest_result.get("taskId"):
+            query.append(f"result_task_id={quote(str(latest_result['taskId']), safe='')}")
+        actions.append(
+            {
+                "label": "Mark reviewed",
+                "tone": "secondary",
+                "postUrl": f"/projects/research-writing/{encoded_thread}/review?{'&'.join(query)}",
             }
         )
 
@@ -237,7 +305,14 @@ def _dedupe_actions(actions: Iterable[dict]) -> list[dict]:
     return unique
 
 
-def _next_action(item: dict, *, state: str, actions: list[dict], latest_artifact: dict | None) -> dict:
+def _next_action(
+    item: dict,
+    *,
+    state: str,
+    actions: list[dict],
+    latest_artifact: dict | None,
+    review_status: str,
+) -> dict:
     primary_action = next((action for action in actions if action.get("tone") == "primary"), actions[0] if actions else {})
 
     if state == "blocked":
@@ -249,12 +324,20 @@ def _next_action(item: dict, *, state: str, actions: list[dict], latest_artifact
             text = "Reclaim the stuck claim, then run the thread again."
         else:
             text = "Review the latest output and decide what should move next."
+    elif state == "reviewed":
+        text = "Queue the next pass when you want this thread moving again."
     elif state == "ready":
-        text = "Run the next pass while the ready work is already lined up."
+        if review_status == "reviewed":
+            text = "Run the next pass now that the last result is reviewed and the next work is lined up."
+        else:
+            text = "Run the next pass while the ready work is already lined up."
     elif state == "running":
         text = "Check the running pass before queuing more work behind it."
     elif latest_artifact:
-        text = "Open the latest result and decide whether it is ready to build from."
+        if review_status == "reviewed":
+            text = "The latest result is already reviewed. Open it again if you need the context."
+        else:
+            text = "Open the latest result, then mark it reviewed when you're done."
     else:
         text = "Open the thread and choose the next concrete move."
 
@@ -266,7 +349,14 @@ def _next_action(item: dict, *, state: str, actions: list[dict], latest_artifact
     }
 
 
-def _why_now(item: dict, *, state: str, latest_result: dict | None, latest_artifact: dict | None) -> str:
+def _why_now(
+    item: dict,
+    *,
+    state: str,
+    latest_result: dict | None,
+    latest_artifact: dict | None,
+    review_status: str,
+) -> str:
     if state == "blocked":
         return f"{item.get('blocked_count', 0)} blocked task{'s' if item.get('blocked_count', 0) != 1 else ''} are waiting on a decision."
     if state == "failed":
@@ -277,11 +367,17 @@ def _why_now(item: dict, *, state: str, latest_result: dict | None, latest_artif
         if latest_result and latest_result.get("needsReview"):
             return latest_result["summary"]
         return "The latest pass needs a human look before the thread should move again."
+    if state == "reviewed":
+        return "The latest result was reviewed locally and is waiting for the next pass."
     if state == "ready":
+        if review_status == "reviewed":
+            return "The latest result was reviewed and the next pass is already lined up."
         return f"{item.get('ready_count', 0)} ready task{'s' if item.get('ready_count', 0) != 1 else ''} can move right now on the local hub."
     if state == "running":
         return f"{item.get('claimed_count', 0)} worker claim{'s' if item.get('claimed_count', 0) != 1 else ''} are in motion already."
     if latest_artifact:
+        if review_status != "reviewed":
+            return f"{latest_artifact['name']} is waiting for a local review receipt."
         return f"{latest_artifact['name']} is the latest saved result for this thread."
     done_count = item.get("task_counts", {}).get("done", 0)
     if done_count:
@@ -305,10 +401,15 @@ def _resume_mode(
     latest_result: dict | None,
     latest_artifact: dict | None,
     needs_human_review: bool,
+    review_status: str,
 ) -> str:
     if state in {"blocked", "failed", "review-needed"} or needs_human_review:
         return "review"
+    if state == "reviewed":
+        return "continue"
     if state == "ready":
+        if review_status == "reviewed":
+            return "continue"
         return "dispatch"
     if state == "running":
         return "monitor"
@@ -505,13 +606,14 @@ def _needs_human_review(
     state: str,
     latest_result: dict | None,
     latest_artifact: dict | None,
+    review_status: str,
 ) -> bool:
     return bool(
         item.get("blocked_count")
         or item.get("failed_count")
         or item.get("expired_count")
-        or (latest_result and latest_result.get("needsReview"))
-        or (state == "done" and (latest_result or latest_artifact))
+        or ((latest_result and latest_result.get("needsReview")) and review_status != "reviewed")
+        or ((state == "done" or state == "review-needed") and (latest_result or latest_artifact) and review_status != "reviewed")
     )
 
 
@@ -519,6 +621,7 @@ def _visual_state(
     state: str,
     needs_human_review: bool,
     *,
+    review_status: str,
     latest_result: dict | None,
     latest_artifact: dict | None,
 ) -> str:
@@ -526,6 +629,8 @@ def _visual_state(
         return "blocked"
     if needs_human_review or state in {"failed", "review-needed"}:
         return "review-needed"
+    if state == "reviewed":
+        return "reviewed"
     if state == "ready":
         return "ready"
     if state == "running":
@@ -544,6 +649,7 @@ def _resume_score(
     state: str,
     needs_human_review: bool,
     event_recency: int,
+    review_status: str,
 ) -> int:
     score = 0
     score += item.get("blocked_count", 0) * 170
@@ -555,6 +661,8 @@ def _resume_score(
     score += _state_weight(state)
     if needs_human_review:
         score += 80
+    if review_status == "reviewed":
+        score += 65
     if latest_artifact:
         score += _artifact_score(latest_artifact)
     if latest_result:
@@ -570,6 +678,7 @@ def _state_weight(state: str) -> int:
         "blocked": 90,
         "failed": 70,
         "review-needed": 60,
+        "reviewed": 40,
         "ready": 25,
         "running": 20,
         "done": 15,
@@ -625,6 +734,8 @@ def _resume_target(record: dict) -> dict:
         "latestWorkerEvent": record["latestWorkerEvent"],
         "latestArtifact": record["latestArtifact"],
         "latestResult": record["latestResult"],
+        "reviewReceipt": record["reviewReceipt"],
+        "reviewStatus": record["reviewStatus"],
         "needsHumanReview": record["needsHumanReview"],
         "actions": record["actions"],
         "visualState": record["visualState"],
@@ -633,6 +744,46 @@ def _resume_target(record: dict) -> dict:
         "state": record["state"],
         "detail": record["detail"],
     }
+
+
+def _latest_review_receipt(
+    thread_id: str,
+    *,
+    latest_artifact: dict | None,
+    latest_result: dict | None,
+    review_receipt_records: dict[str, list[dict]],
+) -> dict | None:
+    matches = []
+    for receipt in review_receipt_records.get(thread_id, []):
+        artifact_match = latest_artifact and receipt.get("artifact_id") == latest_artifact["artifactId"]
+        result_match = latest_result and receipt.get("result_task_id") == latest_result["taskId"]
+        if artifact_match or result_match:
+            matches.append(receipt)
+
+    if not matches:
+        return None
+
+    receipt = sorted(matches, key=lambda item: (str(item.get("created_at", "")), str(item.get("review_ref", ""))))[-1]
+    return {
+        "reviewRef": receipt.get("review_ref"),
+        "artifactId": receipt.get("artifact_id"),
+        "resultTaskId": receipt.get("result_task_id"),
+        "status": receipt.get("status", "reviewed"),
+        "createdAt": receipt.get("created_at"),
+    }
+
+
+def _review_status(
+    latest_review_receipt: dict | None,
+    *,
+    latest_artifact: dict | None,
+    latest_result: dict | None,
+) -> str:
+    if latest_review_receipt:
+        return "reviewed"
+    if latest_artifact or latest_result:
+        return "pending"
+    return "none"
 
 
 def _truncate_inline(value: str, limit: int = 140) -> str:

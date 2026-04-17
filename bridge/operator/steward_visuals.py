@@ -37,6 +37,14 @@ _STATE_ASSET_MAP = {
             "mediaType": "image/svg+xml",
         },
     ),
+    "reviewed": (
+        {
+            "kind": "hero",
+            "name": "resume-reviewed-scene.svg",
+            "label": "Reviewed scene",
+            "mediaType": "image/svg+xml",
+        },
+    ),
     "quiet": (
         {
             "kind": "hero",

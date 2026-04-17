@@ -405,6 +405,88 @@ def run_research_writing_assemble(request: dict) -> dict:
     return out
 
 
+def run_research_writing_review(request: dict) -> dict:
+    store_root = request.get("store_root")
+    thread_id = request.get("thread_id")
+    artifact_id = request.get("artifact_id")
+    result_task_id = request.get("result_task_id")
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("thread_id must be a non-empty string")
+    if artifact_id is not None and (not isinstance(artifact_id, str) or not artifact_id):
+        raise ValueError("artifact_id must be a non-empty string when provided")
+    if result_task_id is not None and (not isinstance(result_task_id, str) or not result_task_id):
+        raise ValueError("result_task_id must be a non-empty string when provided")
+
+    status = describe_research_writing(store_root, thread_id)
+    store = FileTaskStore(store_root)
+    resolved_artifact_id = artifact_id or _latest_research_writing_artifact_id(store, status["owner_id"])
+    if resolved_artifact_id is None and result_task_id is None:
+        raise ValueError("thread has no reviewable artifact or result yet")
+
+    receipt = store.record_review_receipt(
+        thread_id,
+        artifact_id=resolved_artifact_id,
+        result_task_id=result_task_id,
+    )
+    record_many(["research_writing_review", "review_recorded"])
+    return {
+        "thread_id": thread_id,
+        "review_receipt": receipt.to_dict(),
+        "status": describe_research_writing(store_root, thread_id),
+        "metrics": snapshot(),
+    }
+
+
+def run_research_writing_refresh(request: dict) -> dict:
+    store_root = request.get("store_root")
+    thread_id = request.get("thread_id")
+    source_paths = request.get("source_paths", [])
+    title = request.get("title")
+    objective = request.get("objective")
+    constraints = request.get("constraints")
+    max_attempts = request.get("max_attempts", 3)
+
+    if not isinstance(store_root, str) or not store_root:
+        raise ValueError("store_root must be a non-empty string")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("thread_id must be a non-empty string")
+    if not isinstance(source_paths, list) or not all(isinstance(path, str) and path for path in source_paths):
+        raise ValueError("source_paths must be a list of non-empty strings")
+    if title is not None and (not isinstance(title, str) or not title):
+        raise ValueError("title must be a non-empty string when provided")
+    if objective is not None and (not isinstance(objective, str) or not objective):
+        raise ValueError("objective must be a non-empty string when provided")
+    if constraints is not None and (
+        not isinstance(constraints, list) or not all(isinstance(item, str) and item for item in constraints)
+    ):
+        raise ValueError("constraints must be a list of non-empty strings when provided")
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("max_attempts must be a positive integer")
+
+    status = describe_research_writing(store_root, thread_id)
+    store = FileTaskStore(store_root)
+    latest_artifact_id = _latest_research_writing_artifact_id(store, status["owner_id"])
+    if latest_artifact_id is not None and not _thread_has_review_receipt(store, thread_id, artifact_id=latest_artifact_id):
+        raise ValueError("latest result has not been reviewed yet")
+
+    out = refresh_research_writing(
+        store_root,
+        thread_id=thread_id,
+        source_paths=source_paths,
+        title=title,
+        objective=objective,
+        constraints=constraints,
+        max_attempts=max_attempts,
+    )
+    record("research_writing_refresh")
+    out["status"] = describe_research_writing(store_root, thread_id)
+    out["metrics"] = snapshot()
+    return out
+
+
 def run_research_writing_run(request: dict) -> dict:
     store_root = request.get("store_root")
     thread_id = request.get("thread_id")
@@ -467,6 +549,28 @@ def run_research_writing_run(request: dict) -> dict:
         "status": status,
         "metrics": snapshot(),
     }
+
+
+def _latest_research_writing_artifact_id(store: FileTaskStore, owner_id: str) -> str | None:
+    ranked = []
+    for artifact in store.list_artifacts(owner_id=owner_id):
+        name = str(artifact.name).lower()
+        media_type = str(artifact.media_type).lower()
+        if name == "research-packet.json":
+            continue
+        priority = 2 if name.endswith(".md") or media_type == "text/markdown" else 1
+        ranked.append((priority, artifact.created_at, artifact.artifact_id))
+    if not ranked:
+        return None
+    ranked.sort()
+    return ranked[-1][2]
+
+
+def _thread_has_review_receipt(store: FileTaskStore, thread_id: str, *, artifact_id: str) -> bool:
+    for receipt in store.list_review_receipts(thread_id=thread_id):
+        if receipt.artifact_id == artifact_id and receipt.status == "reviewed":
+            return True
+    return False
 
 
 def run_research_writing_import_folder(request: dict) -> dict:
