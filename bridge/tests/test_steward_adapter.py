@@ -199,6 +199,34 @@ class TestStewardAdapter(unittest.TestCase):
                 else:
                     os.environ['CLOUD_BRIDGE_STEWARD_DB_PATH'] = previous
 
+    def test_tick_emits_idempotent_scheduler_notifications(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / 'steward.sqlite'
+
+            _run_adapter(db_path, 'ingest', '--text', 'add bill mortgage due 1st')
+            _run_adapter(db_path, 'ingest', '--text', 'add date taxes on 2026-04-18')
+            _run_adapter(db_path, 'ingest', '--text', 'add routine let dogs out every 180m')
+
+            heartbeat = _run_adapter(db_path, 'tick', '--mode', 'heartbeat')
+            self.assertEqual(heartbeat['operation'], 'tick')
+            self.assertEqual(heartbeat['result']['status'], 'emitted')
+            self.assertEqual(heartbeat['result']['runs'][0]['mode'], 'heartbeat')
+
+            heartbeat_again = _run_adapter(db_path, 'tick', '--mode', 'heartbeat')
+            self.assertEqual(heartbeat_again['result']['status'], 'noop')
+
+            bills = _run_adapter(db_path, 'tick', '--mode', 'bills')
+            self.assertEqual(bills['result']['runs'][0]['status'], 'emitted')
+            self.assertIn('Mortgage is overdue', bills['result']['runs'][0]['message'])
+
+            dates = _run_adapter(db_path, 'tick', '--mode', 'dates')
+            self.assertEqual(dates['result']['runs'][0]['status'], 'emitted')
+            self.assertIn('Taxes is in 1 day', dates['result']['runs'][0]['message'])
+
+            morning = _run_adapter(db_path, 'tick', '--mode', 'morning')
+            self.assertEqual(morning['result']['runs'][0]['status'], 'emitted')
+            self.assertIn('Mortgage is overdue', morning['result']['runs'][0]['message'])
+
 
 if __name__ == '__main__':
     unittest.main()

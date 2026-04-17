@@ -43,6 +43,7 @@ from bridge.steward import (
     run_steward_home,
     run_steward_ingest,
     run_steward_records,
+    run_steward_tick,
 )
 from bridge.workers import FileTaskStore
 
@@ -147,6 +148,18 @@ def steward_action_endpoint(request: dict) -> dict:
     action = request.get("action", "")
     try:
         payload = run_steward_action(str(kind), str(record_ref), str(action))
+        if isinstance(payload.get("frontDoor"), dict):
+            payload["frontDoor"] = _decorate_steward_home(payload["frontDoor"])
+        return payload
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/steward/tick")
+def steward_tick_endpoint(request: dict | None = None) -> dict:
+    mode = (request or {}).get("mode", "all")
+    try:
+        payload = run_steward_tick(str(mode))
         if isinstance(payload.get("frontDoor"), dict):
             payload["frontDoor"] = _decorate_steward_home(payload["frontDoor"])
         return payload

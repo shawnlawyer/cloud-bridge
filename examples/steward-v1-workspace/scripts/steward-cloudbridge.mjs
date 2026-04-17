@@ -16,6 +16,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WORKSPACE_ROOT = path.dirname(__dirname);
 const DEFAULT_DB_PATH = path.join(WORKSPACE_ROOT, 'state', 'steward.sqlite');
+const DEFAULT_TIMEZONE = 'America/New_York';
+const DEFAULT_ACTIVE_WINDOW = '08:00-22:00';
+const DEFAULT_HEARTBEAT_MINUTES = 30;
+const DEFAULT_MORNING_AT = '08:00';
+const DEFAULT_MIDDAY_AT = '13:00';
+const DEFAULT_EVENING_AT = '21:00';
 
 function parseArgs(argv) {
   const [operation, ...rest] = argv;
@@ -41,8 +47,86 @@ function isoNow(now = new Date()) {
   return now.toISOString();
 }
 
+function scheduleConfig() {
+  return {
+    timezone: process.env.CLOUD_BRIDGE_STEWARD_TIMEZONE || DEFAULT_TIMEZONE,
+    activeWindow: process.env.CLOUD_BRIDGE_STEWARD_ACTIVE_WINDOW || DEFAULT_ACTIVE_WINDOW,
+    heartbeatMinutes: Number.parseInt(
+      process.env.CLOUD_BRIDGE_STEWARD_HEARTBEAT_MINUTES || String(DEFAULT_HEARTBEAT_MINUTES),
+      10,
+    ),
+    morningAt: process.env.CLOUD_BRIDGE_STEWARD_MORNING_AT || DEFAULT_MORNING_AT,
+    middayAt: process.env.CLOUD_BRIDGE_STEWARD_MIDDAY_AT || DEFAULT_MIDDAY_AT,
+    eveningAt: process.env.CLOUD_BRIDGE_STEWARD_EVENING_AT || DEFAULT_EVENING_AT,
+  };
+}
+
 function monthKeyForDate(date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function zonedParts(now, timezone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(now).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]),
+  );
+  return {
+    dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+    hour: Number.parseInt(parts.hour, 10),
+    minute: Number.parseInt(parts.minute, 10),
+  };
+}
+
+function parseClockTime(value) {
+  const match = String(value ?? '').match(/^(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    hour: Number.parseInt(match[1], 10),
+    minute: Number.parseInt(match[2], 10),
+  };
+}
+
+function minutesOfDay(parts) {
+  return (parts.hour * 60) + parts.minute;
+}
+
+function withinActiveWindow(now, config) {
+  const parts = zonedParts(now, config.timezone);
+  const [startRaw, endRaw] = String(config.activeWindow).split('-');
+  const start = parseClockTime(startRaw);
+  const end = parseClockTime(endRaw);
+  if (!start || !end) {
+    return false;
+  }
+  const current = minutesOfDay(parts);
+  const startMinutes = (start.hour * 60) + start.minute;
+  const endMinutes = (end.hour * 60) + end.minute;
+  return current >= startMinutes && current <= endMinutes;
+}
+
+function heartbeatSlot(now, config) {
+  const parts = zonedParts(now, config.timezone);
+  const interval = Number.isFinite(config.heartbeatMinutes) && config.heartbeatMinutes > 0 ? config.heartbeatMinutes : DEFAULT_HEARTBEAT_MINUTES;
+  const roundedMinute = Math.floor(parts.minute / interval) * interval;
+  return {
+    dateKey: parts.dateKey,
+    time: `${String(parts.hour).padStart(2, '0')}:${String(roundedMinute).padStart(2, '0')}`,
+  };
+}
+
+function sameLocalTime(now, target, timezone) {
+  return zonedParts(now, timezone).time === target;
 }
 
 function daysInMonth(year, monthIndex) {
@@ -199,7 +283,42 @@ function ensureAdapterSchema(db) {
       notification_ref TEXT NOT NULL UNIQUE,
       dismissed_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS scheduler_events (
+      id INTEGER PRIMARY KEY,
+      event_key TEXT NOT NULL UNIQUE,
+      mode TEXT NOT NULL,
+      emitted_at TEXT NOT NULL
+    );
   `);
+}
+
+function schedulerEventSeen(db, eventKey) {
+  return (db.prepare('SELECT 1 FROM scheduler_events WHERE event_key = ? LIMIT 1').get(eventKey) ?? null) != null;
+}
+
+function rememberSchedulerEvent(db, eventKey, mode, now) {
+  db.prepare(`
+    INSERT INTO scheduler_events (event_key, mode, emitted_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT (event_key) DO NOTHING
+  `).run(eventKey, mode, isoNow(now));
+}
+
+function emitScheduledNotification(db, { eventKey, mode, kind, title, detail = null, severity = 'steady', sourceRef = null, now }) {
+  if (schedulerEventSeen(db, eventKey)) {
+    return false;
+  }
+  logNotification(db, {
+    kind,
+    title,
+    detail,
+    severity,
+    sourceRef,
+    createdAt: isoNow(now),
+  });
+  rememberSchedulerEvent(db, eventKey, mode, now);
+  return true;
 }
 
 function logNotification(db, { kind, title, detail = null, severity = 'steady', sourceRef = null, createdAt = isoNow() }) {
@@ -693,6 +812,7 @@ function buildLastWorked(db, now, oneNextStep = null) {
 }
 
 function buildFrontDoor(db, now) {
+  const config = scheduleConfig();
   const approvals = approvalRecords(db).records.filter((row) => row.status === 'pending');
   const heartbeat = buildHeartbeat(db, now);
   const stateEvent = latestState(db);
@@ -731,6 +851,16 @@ function buildFrontDoor(db, now) {
     todaySnapshot: {
       ...todaySnapshot(db, now),
       notificationCount,
+    },
+    schedule: {
+      timezone: config.timezone,
+      activeWindow: config.activeWindow,
+      heartbeatMinutes: config.heartbeatMinutes,
+      anchors: {
+        morning: config.morningAt,
+        midday: config.middayAt,
+        evening: config.eveningAt,
+      },
     },
   };
 }
@@ -964,6 +1094,180 @@ function notificationActionPayload(db, notificationRef, action, now) {
   };
 }
 
+function billReminderMessage(record) {
+  switch (record.state) {
+    case 'overdue':
+      return `Handle this first: ${record.name} is overdue.`;
+    case 'due_today':
+      return `Handle this first: ${record.name} is due today.`;
+    case 'due_soon':
+      return `Plan this now: ${record.name} is due in ${record.daysUntil} day(s).`;
+    default:
+      return null;
+  }
+}
+
+function importantDateReminderMessage(record) {
+  switch (record.state) {
+    case 'today':
+      return `Handle this first: ${record.name} is today.`;
+    case 'soon':
+      return `Prepare now: ${record.name} is in ${record.daysUntil} day(s).`;
+    default:
+      return null;
+  }
+}
+
+function activeTaskPrompt(db) {
+  const activeTask = db.prepare("SELECT * FROM tasks WHERE status = 'active' ORDER BY updated_at ASC LIMIT 1").get() ?? null;
+  if (!activeTask) {
+    return null;
+  }
+  const step = db
+    .prepare('SELECT summary FROM task_steps WHERE task_id = ? AND status = \'pending\' ORDER BY step_order ASC LIMIT 1')
+    .get(activeTask.id);
+  return step?.summary ? `Continue with: ${step.summary}.` : `Continue with: ${activeTask.label}.`;
+}
+
+function tickHeartbeat(db, now, config) {
+  if (!withinActiveWindow(now, config)) {
+    return { mode: 'heartbeat', status: 'skipped', message: 'Outside active window.' };
+  }
+  const nextAction = getNextAction(db, now);
+  if (nextAction.text === 'HEARTBEAT_OK') {
+    return { mode: 'heartbeat', status: 'noop', message: 'HEARTBEAT_OK' };
+  }
+  const slot = heartbeatSlot(now, config);
+  const eventKey = `heartbeat:${slot.dateKey}:${slot.time}`;
+  const emitted = emitScheduledNotification(db, {
+    eventKey,
+    mode: 'heartbeat',
+    kind: nextAction.kind,
+    title: nextAction.text,
+    detail: 'Heartbeat nudge.',
+    severity: severityFromNextKind(nextAction.kind),
+    sourceRef: 'heartbeat',
+    now,
+  });
+  return {
+    mode: 'heartbeat',
+    status: emitted ? 'emitted' : 'noop',
+    message: nextAction.text,
+    eventKey,
+  };
+}
+
+function tickAnchor(db, now, config, mode) {
+  const target = mode === 'morning' ? config.morningAt : mode === 'midday' ? config.middayAt : config.eveningAt;
+  if (!sameLocalTime(now, target, config.timezone)) {
+    return { mode, status: 'skipped', message: `Not ${mode} anchor time.` };
+  }
+  const parts = zonedParts(now, config.timezone);
+  const eventKey = `anchor:${mode}:${parts.dateKey}`;
+  const nextAction = getNextAction(db, now);
+  const taskPrompt = activeTaskPrompt(db);
+  const title = mode === 'morning'
+    ? (nextAction.text === 'HEARTBEAT_OK' ? 'Morning check-in: pick one thing that matters.' : nextAction.text)
+    : mode === 'midday'
+      ? (taskPrompt ?? (nextAction.text === 'HEARTBEAT_OK' ? 'Midday drift check: pick one thing and move it.' : nextAction.text))
+      : (taskPrompt ? `Evening closeout: ${taskPrompt}` : 'Evening closeout: mark what is done and park the next step.');
+  const kind = mode === 'evening' ? 'anchor' : (nextAction.kind === 'steady' ? 'anchor' : nextAction.kind);
+  const emitted = emitScheduledNotification(db, {
+    eventKey,
+    mode,
+    kind,
+    title,
+    detail: 'Scheduled anchor.',
+    severity: severityFromNextKind(kind),
+    sourceRef: mode,
+    now,
+  });
+  return { mode, status: emitted ? 'emitted' : 'noop', message: title, eventKey };
+}
+
+function tickBills(db, now, config) {
+  const parts = zonedParts(now, config.timezone);
+  const eventKey = `bills:${parts.dateKey}`;
+  const bill = billRecords(db, now).records.find((row) => ['overdue', 'due_today', 'due_soon'].includes(row.state)) ?? null;
+  const message = bill ? billReminderMessage(bill) : 'No bill reminder due.';
+  if (!bill || !message) {
+    return { mode: 'bills', status: 'noop', message };
+  }
+  const emitted = emitScheduledNotification(db, {
+    eventKey,
+    mode: 'bills',
+    kind: 'bill',
+    title: message,
+    detail: `${bill.name} · ${bill.dueDate}${bill.amountText ? ` · ${bill.amountText}` : ''}`,
+    severity: severityFromNextKind('bill'),
+    sourceRef: bill.ref,
+    now,
+  });
+  return { mode: 'bills', status: emitted ? 'emitted' : 'noop', message, eventKey };
+}
+
+function tickDates(db, now, config) {
+  const parts = zonedParts(now, config.timezone);
+  const eventKey = `dates:${parts.dateKey}`;
+  const dateRow = importantDateRecords(db, now).records.find((row) => ['today', 'soon'].includes(row.state)) ?? null;
+  const message = dateRow ? importantDateReminderMessage(dateRow) : 'No date reminder due.';
+  if (!dateRow || !message) {
+    return { mode: 'dates', status: 'noop', message };
+  }
+  const emitted = emitScheduledNotification(db, {
+    eventKey,
+    mode: 'dates',
+    kind: 'important_date',
+    title: message,
+    detail: `${dateRow.name} · ${dateRow.onDate}`,
+    severity: severityFromNextKind('task'),
+    sourceRef: dateRow.ref,
+    now,
+  });
+  return { mode: 'dates', status: emitted ? 'emitted' : 'noop', message, eventKey };
+}
+
+function tickPayload(db, mode, now) {
+  const config = scheduleConfig();
+  const normalizedMode = String(mode || 'all').toLowerCase();
+  const sequence = normalizedMode === 'all'
+    ? ['heartbeat', 'morning', 'midday', 'evening', 'bills', 'dates']
+    : [normalizedMode];
+  const runs = [];
+  for (const entry of sequence) {
+    switch (entry) {
+      case 'heartbeat':
+        runs.push(tickHeartbeat(db, now, config));
+        break;
+      case 'morning':
+      case 'midday':
+      case 'evening':
+        runs.push(tickAnchor(db, now, config, entry));
+        break;
+      case 'bills':
+        runs.push(tickBills(db, now, config));
+        break;
+      case 'dates':
+        runs.push(tickDates(db, now, config));
+        break;
+      default:
+        throw new Error(`Unsupported tick mode: ${mode}`);
+    }
+  }
+  const emittedCount = runs.filter((run) => run.status === 'emitted').length;
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    operation: 'tick',
+    mode: normalizedMode,
+    result: {
+      status: emittedCount > 0 ? 'emitted' : 'noop',
+      emittedCount,
+      runs,
+    },
+    frontDoor: buildFrontDoor(db, now),
+  };
+}
+
 function approvalDecisionPayload(db, approvalRef, decision, now) {
   if (!['approve', 'deny'].includes(decision)) {
     throw new Error('decision must be approve or deny');
@@ -1100,6 +1404,9 @@ function main() {
         throw new Error('--action is required for action');
       }
       output = actionPayload(db, String(options.kind), String(options.ref), String(options.action), now);
+      break;
+    case 'tick':
+      output = tickPayload(db, String(options.mode ?? 'all'), now);
       break;
     default:
       throw new Error(`unsupported operation: ${operation}`);

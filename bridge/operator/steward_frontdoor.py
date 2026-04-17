@@ -20,6 +20,7 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     snapshot = home.get("todaySnapshot", {})
     current_context = home.get("currentContext", {})
     last_worked = home.get("lastWorked", {})
+    schedule = home.get("schedule", {})
     approval_summaries = (approvals or {}).get("summaries", [])
     lane_cards = "".join(
         f'''<a class="lane-card" href="/steward/view/{escape(kind)}"><strong>{escape(label)}</strong><span>Open lane</span></a>'''
@@ -54,6 +55,7 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     .lane-card {{ display: flex; flex-direction: column; gap: 6px; background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
     .strip-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
     .strip-item {{ background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
+    .button-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }}
     .context-list, .approval-list {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }}
     .approval-item {{ background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
     .approval-actions {{ display: flex; gap: 8px; margin-top: 10px; }}
@@ -109,6 +111,18 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
       </ul>
     </section>
     <section class="panel" style="margin-top: 18px;">
+      <h2>Rhythm</h2>
+      <p class="muted">{escape(_schedule_summary(schedule))}</p>
+      <div class="button-row">
+        <button data-tick-mode="heartbeat">Run heartbeat</button>
+        <button data-tick-mode="morning">Run morning</button>
+        <button data-tick-mode="midday">Run midday</button>
+        <button data-tick-mode="evening">Run evening</button>
+        <button class="secondary" data-tick-mode="bills">Run bills</button>
+        <button class="secondary" data-tick-mode="dates">Run dates</button>
+      </div>
+    </section>
+    <section class="panel" style="margin-top: 18px;">
       <h2>Pending Approvals</h2>
       <ul class="approval-list">{approval_items}</ul>
     </section>
@@ -151,6 +165,21 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
             decision: button.dataset.decision,
           }});
           status.textContent = payload.result?.status || 'Updated.';
+          window.location.reload();
+        }} catch (error) {{
+          status.textContent = error.message;
+        }}
+      }});
+    }}
+    for (const button of document.querySelectorAll('[data-tick-mode]')) {{
+      button.addEventListener('click', async () => {{
+        const status = document.getElementById('status');
+        status.textContent = 'Running tick...';
+        try {{
+          const payload = await postJson('/steward/tick', {{
+            mode: button.dataset.tickMode,
+          }});
+          status.textContent = payload.result?.runs?.map((run) => `${{run.mode}}: ${{run.status}}`).join(', ') || 'Tick complete.';
           window.location.reload();
         }} catch (error) {{
           status.textContent = error.message;
@@ -287,6 +316,21 @@ def _approval_item(item: dict) -> str:
         f'<div class="approval-actions"><button data-approval-ref="{ref}" data-decision="approve">Approve</button>'
         f'<button class="secondary" data-approval-ref="{ref}" data-decision="deny">Deny</button></div>'
         '</li>'
+    )
+
+
+def _schedule_summary(schedule: dict | None) -> str:
+    if not schedule:
+        return "Active hours 08:00-22:00. Heartbeat every 30m."
+    anchors = schedule.get("anchors", {})
+    timezone = schedule.get("timezone", "America/New_York")
+    return (
+        f"Active hours {schedule.get('activeWindow', '08:00-22:00')} · "
+        f"heartbeat every {schedule.get('heartbeatMinutes', 30)}m · "
+        f"morning {anchors.get('morning', '08:00')} · "
+        f"midday {anchors.get('midday', '13:00')} · "
+        f"evening {anchors.get('evening', '21:00')} · "
+        f"{timezone}"
     )
 
 

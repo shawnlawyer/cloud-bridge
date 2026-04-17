@@ -76,3 +76,9 @@ def run_steward_action(kind: str, record_ref: str, action: str) -> dict[str, Any
     if not action.strip():
         raise ValueError("action must be non-empty")
     return run_steward_adapter("action", "--kind", kind, "--ref", record_ref, "--action", action)
+
+
+def run_steward_tick(mode: str = "all") -> dict[str, Any]:
+    if not mode.strip():
+        raise ValueError("mode must be non-empty")
+    return run_steward_adapter("tick", "--mode", mode)
