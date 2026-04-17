@@ -167,6 +167,18 @@ export function openStewardDb(dbPath) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS followups (
+      id INTEGER PRIMARY KEY,
+      label TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      due_on TEXT NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tasks (
       id INTEGER PRIMARY KEY,
       label TEXT NOT NULL,
@@ -234,6 +246,10 @@ function getBillBySlug(db, slug) {
 
 function getTaskBySlug(db, slug) {
   return db.prepare("SELECT * FROM tasks WHERE slug = ?").get(slug) ?? null;
+}
+
+function getFollowupBySlug(db, slug) {
+  return db.prepare("SELECT * FROM followups WHERE slug = ?").get(slug) ?? null;
 }
 
 function getActiveRoom(db) {
@@ -445,6 +461,48 @@ function upsertImportantDate(db, action, now) {
     ok: true,
     kind: "important_date",
     message: `Saved date: ${titleCase(action.name)} on ${action.onDate}.`,
+  };
+}
+
+function upsertFollowup(db, action, now) {
+  const slug = slugify(action.label);
+  const timestamp = isoNow(now);
+  const existing = getFollowupBySlug(db, slug);
+  if (existing) {
+    db.prepare(`
+      UPDATE followups
+      SET label = ?, due_on = ?, notes = ?, status = 'active', updated_at = ?
+      WHERE slug = ?
+    `).run(action.label, action.dueOn, action.notes ?? null, timestamp, slug);
+  } else {
+    db.prepare(`
+      INSERT INTO followups (label, slug, due_on, notes, status, completed_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'active', NULL, ?, ?)
+    `).run(action.label, slug, action.dueOn, action.notes ?? null, timestamp, timestamp);
+  }
+  return {
+    ok: true,
+    kind: "followup",
+    message: `Saved follow-up: ${action.label} on ${action.dueOn}.`,
+  };
+}
+
+function markFollowupDone(db, action, now) {
+  const slug = slugify(action.label);
+  const followup = getFollowupBySlug(db, slug);
+  if (!followup) {
+    return { ok: false, kind: "followup", message: `Follow-up not found: ${action.label}.` };
+  }
+  const timestamp = isoNow(now);
+  db.prepare(`
+    UPDATE followups
+    SET status = 'done', completed_at = ?, updated_at = ?
+    WHERE id = ?
+  `).run(timestamp, timestamp, followup.id);
+  return {
+    ok: true,
+    kind: "followup",
+    message: `Marked follow-up done: ${followup.label}.`,
   };
 }
 
@@ -676,6 +734,10 @@ function listRows(db, kind) {
     case "important_dates":
     case "important-dates":
       return db.prepare("SELECT * FROM important_dates ORDER BY on_date ASC").all();
+    case "followups":
+    case "follow_ups":
+    case "follow-ups":
+      return db.prepare("SELECT * FROM followups ORDER BY due_on ASC, label ASC").all();
     case "tasks":
       return db.prepare("SELECT * FROM tasks ORDER BY updated_at ASC").all();
     case "rooms":
@@ -877,6 +939,24 @@ function routineDueMessage(record, now) {
   return null;
 }
 
+function followupStatus(record, now) {
+  if (record.status !== "active") {
+    return { state: record.status, deltaDays: null };
+  }
+  const dueDate = new Date(`${record.due_on}T12:00:00.000Z`);
+  const deltaDays = daysUntil(dueDate, now);
+  if (deltaDays < 0) {
+    return { state: "overdue", deltaDays };
+  }
+  if (deltaDays === 0) {
+    return { state: "today", deltaDays };
+  }
+  if (deltaDays <= 2) {
+    return { state: "soon", deltaDays };
+  }
+  return { state: "upcoming", deltaDays };
+}
+
 export function getNextAction(db, now = new Date()) {
   for (const entry of computeBillWindows(db, now)) {
     if (entry.daysUntil < 0) {
@@ -900,6 +980,22 @@ export function getNextAction(db, now = new Date()) {
     const message = routineDueMessage(routine, now);
     if (message) {
       return { kind: "routine", text: message };
+    }
+  }
+
+  const followups = db
+    .prepare("SELECT * FROM followups WHERE status = 'active' ORDER BY due_on ASC, label ASC")
+    .all();
+  for (const followup of followups) {
+    const status = followupStatus(followup, now);
+    if (status.state === "overdue" || status.state === "today") {
+      return { kind: "followup", text: `Follow up now: ${followup.label}.` };
+    }
+    if (status.state === "soon") {
+      return {
+        kind: "followup",
+        text: `Plan follow-up: ${followup.label} is in ${status.deltaDays} day(s).`,
+      };
     }
   }
 
@@ -1048,6 +1144,23 @@ export function parseUtterance(rawText, now = new Date()) {
     };
   }
 
+  match = text.match(
+    /^add follow(?: |-)?up (.+?) on (today|tomorrow|\d{4}-\d{2}-\d{2})(?: note (.+))?$/i,
+  );
+  if (match) {
+    return {
+      type: "add_followup",
+      label: titleCase(match[1]),
+      dueOn: parseDateInput(match[2], now),
+      notes: match[3] ?? null,
+    };
+  }
+
+  match = text.match(/^(?:done|completed) follow(?: |-)?up (.+)$/i);
+  if (match) {
+    return { type: "done_followup", label: titleCase(match[1]) };
+  }
+
   match = text.match(/^start room (.+?)(?: (micro))?$/i);
   if (match) {
     return { type: "start_room", roomName: match[1], mode: match[2] ? "micro" : "standard" };
@@ -1132,6 +1245,10 @@ export function applyAction(db, action, now = new Date()) {
       return markRoutineDone(db, action, now);
     case "add_date":
       return upsertImportantDate(db, action, now);
+    case "add_followup":
+      return upsertFollowup(db, action, now);
+    case "done_followup":
+      return markFollowupDone(db, action, now);
     case "start_room":
       return startRoomSession(db, action, now);
     case "room_done":

@@ -598,6 +598,61 @@ function importantDateRecords(db, now) {
   return { summaries, records: rows };
 }
 
+function followupRecords(db, now) {
+  const rows = db.prepare('SELECT * FROM followups ORDER BY due_on ASC, label ASC').all().map((row) => {
+    const dueDate = new Date(`${row.due_on}T12:00:00.000Z`);
+    const deltaDays = daysUntil(dueDate, now);
+    let state = row.status;
+    if (row.status === 'active') {
+      if (deltaDays < 0) {
+        state = 'overdue';
+      } else if (deltaDays === 0) {
+        state = 'today';
+      } else if (deltaDays <= 2) {
+        state = 'soon';
+      } else {
+        state = 'upcoming';
+      }
+    }
+    return {
+      id: row.id,
+      ref: prefixedRef('followup', row.slug),
+      slug: row.slug,
+      label: row.label,
+      dueOn: row.due_on,
+      notes: row.notes,
+      status: row.status,
+      state,
+      daysUntil: deltaDays,
+      detail: state === 'overdue'
+        ? `Overdue follow-up · ${row.due_on}`
+        : state === 'today'
+          ? `Follow up today · ${row.due_on}`
+          : state === 'soon'
+            ? `Follow up in ${deltaDays} day(s) · ${row.due_on}`
+            : state === 'done'
+              ? `Completed${row.completed_at ? ` · ${row.completed_at.slice(0, 10)}` : ''}`
+              : `Follow up on ${row.due_on}`,
+      completedAt: row.completed_at,
+      actions: row.status === 'active' ? [actionDescriptor('mark_done', 'Mark done')] : [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  });
+  const summaries = rows
+    .filter((row) => ['overdue', 'today', 'soon', 'upcoming'].includes(row.state))
+    .slice(0, 8)
+    .map((row) => ({
+      ref: row.ref,
+      title: row.label,
+      detail: row.detail,
+      state: row.state,
+      dueOn: row.dueOn,
+      daysUntil: row.daysUntil,
+    }));
+  return { summaries, records: rows };
+}
+
 function toolLocationRecords(db) {
   const rows = db.prepare('SELECT * FROM tool_locations ORDER BY noted_at DESC, tool_name ASC').all().map((row) => ({
     id: row.id,
@@ -750,6 +805,7 @@ function todaySnapshot(db, now) {
   const tasks = taskRecords(db).records;
   const rooms = roomRecords(db).records;
   const routines = routineRecords(db, now).records;
+  const followups = followupRecords(db, now).records;
   const dates = importantDateRecords(db, now).records;
   const approvals = approvalRecords(db).records;
   const notifications = storedNotificationRows(db);
@@ -759,6 +815,7 @@ function todaySnapshot(db, now) {
     activeTaskCount: tasks.filter((row) => row.status === 'active').length,
     activeRoomCount: rooms.filter((row) => row.status === 'active').length,
     dueRoutineCount: routines.filter((row) => row.state === 'due').length,
+    dueFollowupCount: followups.filter((row) => ['overdue', 'today', 'soon'].includes(row.state)).length,
     upcomingDateCount: dates.filter((row) => ['today', 'soon'].includes(row.state)).length,
     pendingApprovalCount: approvals.filter((row) => row.status === 'pending').length,
     notificationCount: notifications.length,
@@ -878,6 +935,11 @@ function recordsPayload(db, kind, now) {
     case 'routines':
       payload = routineRecords(db, now);
       break;
+    case 'followups':
+    case 'follow_ups':
+    case 'follow-ups':
+      payload = followupRecords(db, now);
+      break;
     case 'important_dates':
     case 'dates':
       payload = importantDateRecords(db, now);
@@ -906,6 +968,8 @@ function recordsPayload(db, kind, now) {
       ? 'notification_events'
       : ['dates', 'important_dates'].includes(normalizedKind)
         ? 'important_dates'
+        : ['follow_ups', 'follow-ups'].includes(normalizedKind)
+          ? 'followups'
         : ['tool_locations', 'tools'].includes(normalizedKind)
           ? 'tools'
           : normalizedKind,
@@ -1075,6 +1139,29 @@ function routineActionPayload(db, routineRef, action, now) {
   };
 }
 
+function followupActionPayload(db, followupRef, action, now) {
+  const slug = stripRefPrefix(followupRef, 'followup');
+  const followup = db.prepare('SELECT * FROM followups WHERE slug = ?').get(slug) ?? null;
+  if (!followup) {
+    throw new Error(`Follow-up not found: ${followupRef}`);
+  }
+  if (action !== 'mark_done') {
+    throw new Error(`Unsupported follow-up action: ${action}`);
+  }
+  db.prepare('UPDATE followups SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?').run(
+    'done',
+    isoNow(now),
+    isoNow(now),
+    followup.id,
+  );
+  return {
+    ok: true,
+    status: 'done',
+    title: followup.label,
+    detail: `Marked done: ${followup.label}.`,
+  };
+}
+
 function notificationActionPayload(db, notificationRef, action, now) {
   if (action !== 'dismiss') {
     throw new Error(`Unsupported notification action: ${action}`);
@@ -1113,6 +1200,18 @@ function importantDateReminderMessage(record) {
       return `Handle this first: ${record.name} is today.`;
     case 'soon':
       return `Prepare now: ${record.name} is in ${record.daysUntil} day(s).`;
+    default:
+      return null;
+  }
+}
+
+function followupReminderMessage(record) {
+  switch (record.state) {
+    case 'overdue':
+    case 'today':
+      return `Follow up now: ${record.label}.`;
+    case 'soon':
+      return `Plan follow-up: ${record.label} is in ${record.daysUntil} day(s).`;
     default:
       return null;
   }
@@ -1227,11 +1326,32 @@ function tickDates(db, now, config) {
   return { mode: 'dates', status: emitted ? 'emitted' : 'noop', message, eventKey };
 }
 
+function tickFollowups(db, now, config) {
+  const parts = zonedParts(now, config.timezone);
+  const eventKey = `followups:${parts.dateKey}`;
+  const row = followupRecords(db, now).records.find((item) => ['overdue', 'today', 'soon'].includes(item.state)) ?? null;
+  const message = row ? followupReminderMessage(row) : 'No follow-up reminder due.';
+  if (!row || !message) {
+    return { mode: 'followups', status: 'noop', message };
+  }
+  const emitted = emitScheduledNotification(db, {
+    eventKey,
+    mode: 'followups',
+    kind: 'followup',
+    title: message,
+    detail: `${row.label} · ${row.dueOn}`,
+    severity: severityFromNextKind('task'),
+    sourceRef: row.ref,
+    now,
+  });
+  return { mode: 'followups', status: emitted ? 'emitted' : 'noop', message, eventKey };
+}
+
 function tickPayload(db, mode, now) {
   const config = scheduleConfig();
   const normalizedMode = String(mode || 'all').toLowerCase();
   const sequence = normalizedMode === 'all'
-    ? ['heartbeat', 'morning', 'midday', 'evening', 'bills', 'dates']
+    ? ['heartbeat', 'morning', 'midday', 'evening', 'bills', 'followups', 'dates']
     : [normalizedMode];
   const runs = [];
   for (const entry of sequence) {
@@ -1246,6 +1366,9 @@ function tickPayload(db, mode, now) {
         break;
       case 'bills':
         runs.push(tickBills(db, now, config));
+        break;
+      case 'followups':
+        runs.push(tickFollowups(db, now, config));
         break;
       case 'dates':
         runs.push(tickDates(db, now, config));
@@ -1319,6 +1442,9 @@ function actionPayload(db, kind, ref, action, now) {
       break;
     case 'routines':
       result = routineActionPayload(db, ref, action, now);
+      break;
+    case 'followups':
+      result = followupActionPayload(db, ref, action, now);
       break;
     case 'tasks':
       result = taskActionPayload(db, ref, action, now);

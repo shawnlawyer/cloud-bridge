@@ -45,6 +45,7 @@ from bridge.steward import (
     run_steward_records,
     run_steward_tick,
 )
+from bridge.steward_continuity import build_continuity_payload
 from bridge.workers import FileTaskStore
 
 app = FastAPI(title="Cloud Bridge API", version="0.1.1")
@@ -78,9 +79,12 @@ def _worker_event_snapshot() -> dict | None:
 
 
 def _decorate_steward_home(home: dict) -> dict:
+    continuity = build_continuity_payload(_operator_store_root())
     last_worked = dict(home.get("lastWorked", {}))
     last_worked["workerEvent"] = _worker_event_snapshot()
-    return {**home, "lastWorked": last_worked}
+    snapshot = dict(home.get("todaySnapshot", {}))
+    snapshot["continuityCount"] = len(continuity.get("records", []))
+    return {**home, "lastWorked": last_worked, "todaySnapshot": snapshot, "continuity": continuity}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -113,6 +117,8 @@ def steward_ingest_endpoint(request: dict) -> dict:
 @app.get("/steward/records")
 def steward_records_endpoint(kind: str = Query(...)) -> dict:
     try:
+        if kind == "continuity":
+            return build_continuity_payload(_operator_store_root())
         return run_steward_records(kind)
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -121,7 +127,7 @@ def steward_records_endpoint(kind: str = Query(...)) -> dict:
 @app.get("/steward/view/{kind}", response_class=HTMLResponse)
 def steward_lane_view_endpoint(kind: str) -> HTMLResponse:
     try:
-        payload = run_steward_records(kind)
+        payload = build_continuity_payload(_operator_store_root()) if kind == "continuity" else run_steward_records(kind)
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     title = str(payload.get("kind", kind)).replace("_", " ").title()

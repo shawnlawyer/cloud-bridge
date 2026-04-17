@@ -5,11 +5,13 @@ import json
 
 LANES = [
     ("bills", "Bills"),
+    ("followups", "Follow-ups"),
     ("routines", "Routines"),
     ("important_dates", "Dates"),
     ("tasks", "Tasks"),
     ("rooms", "Rooms"),
     ("tools", "Tools"),
+    ("continuity", "Continuity"),
     ("notification_events", "Notifications"),
     ("approvals", "Approvals"),
 ]
@@ -21,12 +23,14 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     current_context = home.get("currentContext", {})
     last_worked = home.get("lastWorked", {})
     schedule = home.get("schedule", {})
+    continuity = (home.get("continuity") or {}).get("records", [])
     approval_summaries = (approvals or {}).get("summaries", [])
     lane_cards = "".join(
         f'''<a class="lane-card" href="/steward/view/{escape(kind)}"><strong>{escape(label)}</strong><span>Open lane</span></a>'''
         for kind, label in LANES
     )
     approval_items = "".join(_approval_item(item) for item in approval_summaries) or '<li class="empty">No pending approvals.</li>'
+    continuity_items = "".join(_continuity_item(item) for item in continuity[:3]) or '<li class="empty">Nothing to resume yet.</li>'
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -50,15 +54,17 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     input, button {{ font: inherit; border-radius: 12px; border: 1px solid #334155; }}
     input {{ background: #0b1220; color: #e7eef9; padding: 12px 14px; }}
     button {{ background: #0f766e; color: white; padding: 12px 18px; cursor: pointer; }}
-    button.secondary {{ background: #1e293b; }}
+    button.secondary, .action-link.secondary {{ background: #1e293b; }}
     .lane-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 18px; }}
     .lane-card {{ display: flex; flex-direction: column; gap: 6px; background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
     .strip-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
     .strip-item {{ background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
     .button-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }}
-    .context-list, .approval-list {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }}
+    .context-list, .approval-list, .continuity-list {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }}
     .approval-item {{ background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
     .approval-actions {{ display: flex; gap: 8px; margin-top: 10px; }}
+    .record-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
+    .action-link {{ display: inline-flex; align-items: center; justify-content: center; font: inherit; border-radius: 10px; border: 1px solid #334155; background: #0f766e; color: white; padding: 8px 12px; cursor: pointer; }}
     .empty {{ color: #94a3b8; }}
     pre {{ white-space: pre-wrap; word-break: break-word; color: #cbd5e1; }}
     @media (max-width: 900px) {{ .hero {{ grid-template-columns: 1fr; }} }}
@@ -85,10 +91,12 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
         <div class="stats">
           {_stat_card('Pending approvals', snapshot.get('pendingApprovalCount', 0))}
           {_stat_card('Overdue bills', snapshot.get('overdueBillCount', 0))}
+          {_stat_card('Due follow-ups', snapshot.get('dueFollowupCount', 0))}
           {_stat_card('Due routines', snapshot.get('dueRoutineCount', 0))}
           {_stat_card('Upcoming dates', snapshot.get('upcomingDateCount', 0))}
           {_stat_card('Active tasks', snapshot.get('activeTaskCount', 0))}
           {_stat_card('Active rooms', snapshot.get('activeRoomCount', 0))}
+          {_stat_card('Continuity items', snapshot.get('continuityCount', 0))}
         </div>
       </section>
     </div>
@@ -111,6 +119,10 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
       </ul>
     </section>
     <section class="panel" style="margin-top: 18px;">
+      <h2>Continue Work</h2>
+      <ul class="continuity-list">{continuity_items}</ul>
+    </section>
+    <section class="panel" style="margin-top: 18px;">
       <h2>Rhythm</h2>
       <p class="muted">{escape(_schedule_summary(schedule))}</p>
       <div class="button-row">
@@ -119,6 +131,7 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
         <button data-tick-mode="midday">Run midday</button>
         <button data-tick-mode="evening">Run evening</button>
         <button class="secondary" data-tick-mode="bills">Run bills</button>
+        <button class="secondary" data-tick-mode="followups">Run follow-ups</button>
         <button class="secondary" data-tick-mode="dates">Run dates</button>
       </div>
     </section>
@@ -186,6 +199,19 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
         }}
       }});
     }}
+    for (const button of document.querySelectorAll('[data-post-url]')) {{
+      button.addEventListener('click', async () => {{
+        const status = document.getElementById('status');
+        status.textContent = 'Running...';
+        try {{
+          await fetch(button.dataset.postUrl, {{ method: 'POST' }});
+          status.textContent = 'Done.';
+          window.location.reload();
+        }} catch (error) {{
+          status.textContent = error.message;
+        }}
+      }});
+    }}
   </script>
 </body>
 </html>'''
@@ -216,8 +242,9 @@ def render_steward_lane(title: str, payload: dict) -> str:
     li {{ background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; }}
     .record-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
     button {{ font: inherit; border-radius: 10px; border: 1px solid #334155; background: #0f766e; color: white; padding: 8px 12px; cursor: pointer; }}
-    button.secondary {{ background: #1e293b; }}
+    button.secondary, .action-link.secondary {{ background: #1e293b; }}
     pre {{ white-space: pre-wrap; word-break: break-word; background: #0b1220; border: 1px solid #22324a; border-radius: 14px; padding: 14px; overflow-x: auto; }}
+    .action-link {{ display: inline-flex; align-items: center; justify-content: center; font: inherit; border-radius: 10px; border: 1px solid #334155; background: #0f766e; color: white; padding: 8px 12px; cursor: pointer; }}
   </style>
 </head>
 <body>
@@ -262,6 +289,19 @@ def render_steward_lane(title: str, payload: dict) -> str:
             action: button.dataset.recordAction,
           }});
           status.textContent = payload.result?.detail || payload.result?.status || 'Updated.';
+          window.location.reload();
+        }} catch (error) {{
+          status.textContent = error.message;
+        }}
+      }});
+    }}
+    for (const button of document.querySelectorAll('[data-post-url]')) {{
+      button.addEventListener('click', async () => {{
+        const status = document.getElementById('status');
+        status.textContent = 'Running...';
+        try {{
+          await fetch(button.dataset.postUrl, {{ method: 'POST' }});
+          status.textContent = 'Done.';
           window.location.reload();
         }} catch (error) {{
           status.textContent = error.message;
@@ -316,6 +356,18 @@ def _approval_item(item: dict) -> str:
         f'<div class="approval-actions"><button data-approval-ref="{ref}" data-decision="approve">Approve</button>'
         f'<button class="secondary" data-approval-ref="{ref}" data-decision="deny">Deny</button></div>'
         '</li>'
+    )
+
+
+def _continuity_item(item: dict) -> str:
+    title = escape(str(item.get("title", "Project")))
+    detail = escape(str(item.get("detail", "Project continuity available.")))
+    actions = _record_actions("continuity", "", item.get("actions", []))
+    return (
+        '<li class="approval-item">'
+        f'<strong>{title}</strong><br><span class="muted">{detail}</span>'
+        f"{actions}"
+        "</li>"
     )
 
 
@@ -376,15 +428,27 @@ def _lane_record_item(kind: str, item: dict) -> str:
 
 
 def _record_actions(kind: str, record_ref: str, actions: list[dict]) -> str:
-    if not actions or not record_ref:
+    if not actions:
         return ""
-    buttons = "".join(
-        f'<button class="{escape(str(action.get("tone", "primary")))}" data-kind="{escape(kind)}" '
-        f'data-record-ref="{escape(record_ref)}" data-record-action="{escape(str(action.get("action", "")))}">'
-        f'{escape(str(action.get("label", action.get("action", "Run"))))}</button>'
-        for action in actions
-    )
-    return f'<div class="record-actions">{buttons}</div>'
+    buttons = []
+    for action in actions:
+        tone = escape(str(action.get("tone", "primary")))
+        label = escape(str(action.get("label", action.get("action", "Run"))))
+        href = action.get("href")
+        post_url = action.get("postUrl")
+        record_action = action.get("action")
+        if href:
+            buttons.append(f'<a class="action-link {tone}" href="{escape(str(href))}">{label}</a>')
+            continue
+        if post_url:
+            buttons.append(f'<button class="{tone}" data-post-url="{escape(str(post_url))}">{label}</button>')
+            continue
+        if record_ref and record_action:
+            buttons.append(
+                f'<button class="{tone}" data-kind="{escape(kind)}" '
+                f'data-record-ref="{escape(record_ref)}" data-record-action="{escape(str(record_action))}">{label}</button>'
+            )
+    return f'<div class="record-actions">{"".join(buttons)}</div>'
 
 
 def _script_json(value: object) -> str:

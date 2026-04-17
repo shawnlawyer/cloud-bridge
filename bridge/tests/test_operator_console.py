@@ -171,10 +171,12 @@ class TestOperatorConsole(unittest.TestCase):
                 "todaySnapshot": {
                     "pendingApprovalCount": 1,
                     "overdueBillCount": 1,
+                    "dueFollowupCount": 1,
                     "dueRoutineCount": 1,
                     "upcomingDateCount": 1,
                     "activeTaskCount": 1,
                     "activeRoomCount": 1,
+                    "continuityCount": 2,
                 },
                 "currentContext": {
                     "activeTask": {"label": "Kitchen reset", "track": "home"},
@@ -187,6 +189,18 @@ class TestOperatorConsole(unittest.TestCase):
                     "room": {"label": "Kitchen", "detail": "surfaces"},
                     "notification": {"title": "Continue with Kitchen: trash.", "detail": "Current next step."},
                     "workerEvent": {"event": "worker_dispatch", "detail": "task_id=task-plan-1"},
+                },
+                "continuity": {
+                    "records": [
+                        {
+                            "title": "Alpha Project",
+                            "detail": "Write the packet — 2 ready",
+                            "actions": [
+                                {"label": "Open", "tone": "secondary", "href": "/projects/research-writing/research:alpha/view"},
+                                {"label": "Run thread", "postUrl": "/projects/research-writing/research%3Aalpha/run?dispatch_limit=8&pass_limit=4"},
+                            ],
+                        }
+                    ]
                 },
             },
             {
@@ -203,12 +217,18 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("One Next Step", html)
         self.assertIn("Review budget hold", html)
         self.assertIn("Pending approvals", html)
+        self.assertIn("Due follow-ups", html)
         self.assertIn("Notifications", html)
         self.assertIn("Routines", html)
         self.assertIn("Dates", html)
         self.assertIn("Tools", html)
+        self.assertIn("Continuity", html)
         self.assertIn("Due routines", html)
         self.assertIn("Upcoming dates", html)
+        self.assertIn("Continuity items", html)
+        self.assertIn("Continue Work", html)
+        self.assertIn("Run follow-ups", html)
+        self.assertIn("Alpha Project", html)
         self.assertIn("Rhythm", html)
         self.assertIn("Run heartbeat", html)
         self.assertIn("Run morning", html)
@@ -241,6 +261,31 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("&quot;state&quot;: &quot;overdue&quot;", html)
         self.assertIn("Mark paid", html)
         self.assertIn("/steward/action", html)
+
+    def test_render_steward_lane_supports_direct_post_actions(self):
+        html = render_steward_lane(
+            "Continuity",
+            {
+                "kind": "continuity",
+                "summaries": [
+                    {"title": "Alpha", "detail": "2 ready", "ref": "continuity:research:alpha"}
+                ],
+                "records": [
+                    {
+                        "ref": "continuity:research:alpha",
+                        "title": "Alpha",
+                        "detail": "2 ready",
+                        "actions": [
+                            {"label": "Run thread", "postUrl": "/projects/research-writing/research%3Aalpha/run?dispatch_limit=8&pass_limit=4"}
+                        ],
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("Continuity", html)
+        self.assertIn("Run thread", html)
+        self.assertIn("data-post-url", html)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ class TestStewardAdapter(unittest.TestCase):
             self.assertIn('lastWorked', home)
 
             _run_adapter(db_path, 'ingest', '--text', 'add bill mortgage due 1st')
+            _run_adapter(db_path, 'ingest', '--text', 'add followup call insurance on 2026-04-18 note send claim update')
             _run_adapter(db_path, 'ingest', '--text', 'add routine let dogs out every 180m')
             _run_adapter(db_path, 'ingest', '--text', 'add date taxes on 2026-04-18')
             _run_adapter(db_path, 'ingest', '--text', 'add task kitchen reset: clear counter | load dishwasher')
@@ -56,6 +57,12 @@ class TestStewardAdapter(unittest.TestCase):
             self.assertTrue(any(item['title'] == 'Let Dogs Out' for item in routines['summaries']))
             self.assertTrue(any(row['state'] == 'due' for row in routines['records']))
             self.assertTrue(any(action['action'] == 'mark_done' for row in routines['records'] for action in row['actions']))
+
+            followups = _run_adapter(db_path, 'records', '--kind', 'followups')
+            self.assertEqual(followups['kind'], 'followups')
+            self.assertTrue(any(item['title'] == 'Call Insurance' for item in followups['summaries']))
+            self.assertTrue(any(row['state'] == 'soon' for row in followups['records']))
+            self.assertTrue(any(action['action'] == 'mark_done' for row in followups['records'] for action in row['actions']))
 
             important_dates = _run_adapter(db_path, 'records', '--kind', 'important_dates')
             self.assertEqual(important_dates['kind'], 'important_dates')
@@ -88,6 +95,7 @@ class TestStewardAdapter(unittest.TestCase):
             self.assertEqual(next_step['frontDoor']['lastWorked']['task']['label'], 'kitchen reset')
             self.assertEqual(next_step['frontDoor']['lastWorked']['room']['label'], 'Kitchen')
             self.assertIsNotNone(next_step['frontDoor']['lastWorked']['notification'])
+            self.assertEqual(next_step['frontDoor']['todaySnapshot']['dueFollowupCount'], 1)
             self.assertEqual(next_step['frontDoor']['todaySnapshot']['dueRoutineCount'], 1)
             self.assertEqual(next_step['frontDoor']['todaySnapshot']['upcomingDateCount'], 1)
 
@@ -96,6 +104,7 @@ class TestStewardAdapter(unittest.TestCase):
             db_path = Path(tmpdir) / 'steward.sqlite'
 
             _run_adapter(db_path, 'ingest', '--text', 'add bill mortgage due 1st')
+            _run_adapter(db_path, 'ingest', '--text', 'add followup call insurance on 2026-04-18')
             _run_adapter(db_path, 'ingest', '--text', 'add routine let dogs out every 180m')
             _run_adapter(db_path, 'ingest', '--text', 'add task kitchen reset: clear counter | load dishwasher')
             _run_adapter(db_path, 'ingest', '--text', 'start room kitchen')
@@ -113,6 +122,13 @@ class TestStewardAdapter(unittest.TestCase):
             completed_routine = next(row for row in routine_action['records'] if row['ref'] == routine_ref)
             self.assertIsNotNone(completed_routine['lastDoneAt'])
             self.assertEqual(completed_routine['state'], 'waiting')
+
+            followups = _run_adapter(db_path, 'records', '--kind', 'followups')
+            followup_ref = followups['records'][0]['ref']
+            followup_action = _run_adapter(db_path, 'action', '--kind', 'followups', '--ref', followup_ref, '--action', 'mark_done')
+            completed_followup = next(row for row in followup_action['records'] if row['ref'] == followup_ref)
+            self.assertEqual(completed_followup['status'], 'done')
+            self.assertEqual(completed_followup['state'], 'done')
 
             tasks = _run_adapter(db_path, 'records', '--kind', 'tasks')
             task_ref = tasks['records'][0]['ref']
@@ -204,6 +220,7 @@ class TestStewardAdapter(unittest.TestCase):
             db_path = Path(tmpdir) / 'steward.sqlite'
 
             _run_adapter(db_path, 'ingest', '--text', 'add bill mortgage due 1st')
+            _run_adapter(db_path, 'ingest', '--text', 'add followup call insurance on 2026-04-18')
             _run_adapter(db_path, 'ingest', '--text', 'add date taxes on 2026-04-18')
             _run_adapter(db_path, 'ingest', '--text', 'add routine let dogs out every 180m')
 
@@ -218,6 +235,10 @@ class TestStewardAdapter(unittest.TestCase):
             bills = _run_adapter(db_path, 'tick', '--mode', 'bills')
             self.assertEqual(bills['result']['runs'][0]['status'], 'emitted')
             self.assertIn('Mortgage is overdue', bills['result']['runs'][0]['message'])
+
+            followups = _run_adapter(db_path, 'tick', '--mode', 'followups')
+            self.assertEqual(followups['result']['runs'][0]['status'], 'emitted')
+            self.assertIn('Call Insurance', followups['result']['runs'][0]['message'])
 
             dates = _run_adapter(db_path, 'tick', '--mode', 'dates')
             self.assertEqual(dates['result']['runs'][0]['status'], 'emitted')
