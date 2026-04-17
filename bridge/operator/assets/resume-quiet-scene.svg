@@ -1,0 +1,17 @@
+<svg width="960" height="720" viewBox="0 0 960 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="garden" x1="127" y1="56" x2="835" y2="651" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E6E6D0"/>
+      <stop offset="0.5" stop-color="#9CB8A8"/>
+      <stop offset="1" stop-color="#254A49"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="720" rx="36" fill="url(#garden)"/>
+  <ellipse cx="732" cy="176" rx="122" ry="101" fill="#F5F3E5" fill-opacity="0.42"/>
+  <path d="M0 545C143 513 260 516 364 554C463 590 553 646 655 632C775 616 859 489 960 467V720H0V545Z" fill="#173433" fill-opacity="0.86"/>
+  <path d="M277 469C344 393 412 343 482 319C557 293 635 292 716 315" stroke="#F5F0D9" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 18" opacity="0.72"/>
+  <path d="M603 506C617 468 646 443 690 432C680 469 655 502 615 530" fill="#E7DCA6" fill-opacity="0.85"/>
+  <path d="M642 548C656 509 686 485 730 474C719 512 695 544 654 573" fill="#BFD4AA" fill-opacity="0.84"/>
+  <path d="M684 591C697 556 723 533 760 525C750 557 729 585 694 611" fill="#7FB08F" fill-opacity="0.82"/>
+  <path d="M230 605C295 591 369 582 453 580" stroke="#9FC3B0" stroke-width="4" stroke-linecap="round" opacity="0.72"/>
+</svg>

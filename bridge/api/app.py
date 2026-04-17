@@ -37,6 +37,7 @@ from bridge.operator import (
     render_steward_frontdoor,
     render_steward_lane,
 )
+from bridge.operator.steward_visuals import resolve_steward_visual_path
 from bridge.steward import (
     run_steward_action,
     run_steward_approval,
@@ -84,7 +85,13 @@ def _decorate_steward_home(home: dict) -> dict:
     last_worked["workerEvent"] = _worker_event_snapshot()
     snapshot = dict(home.get("todaySnapshot", {}))
     snapshot["continuityCount"] = len(continuity.get("records", []))
-    return {**home, "lastWorked": last_worked, "todaySnapshot": snapshot, "continuity": continuity}
+    return {
+        **home,
+        "lastWorked": last_worked,
+        "todaySnapshot": snapshot,
+        "continuity": continuity,
+        "resumeTarget": continuity.get("resumeTarget"),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -132,6 +139,15 @@ def steward_lane_view_endpoint(kind: str) -> HTMLResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     title = str(payload.get("kind", kind)).replace("_", " ").title()
     return HTMLResponse(render_steward_lane(title, payload))
+
+
+@app.get("/steward/assets/{asset_name}")
+def steward_asset_endpoint(asset_name: str) -> FileResponse:
+    try:
+        asset_path = resolve_steward_visual_path(asset_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="asset not found")
+    return FileResponse(path=asset_path)
 
 
 @app.post("/steward/approval")

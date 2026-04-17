@@ -1,0 +1,17 @@
+<svg width="960" height="720" viewBox="0 0 960 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="storm" x1="132" y1="76" x2="832" y2="654" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#201E2D"/>
+      <stop offset="0.56" stop-color="#34435A"/>
+      <stop offset="1" stop-color="#A86A4E"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="720" rx="36" fill="url(#storm)"/>
+  <path d="M0 583C134 531 239 519 336 532C432 545 517 627 616 617C757 603 838 463 960 449V720H0V583Z" fill="#111626" fill-opacity="0.86"/>
+  <path d="M243 494C292 430 352 383 423 351C491 320 572 296 666 278" stroke="#F4D2A4" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 18" opacity="0.72"/>
+  <path d="M480 192H705V417H480V192Z" stroke="#F6D3A8" stroke-width="10" stroke-linejoin="round" opacity="0.92"/>
+  <path d="M528 240H658V289H578V321H658V370H528" stroke="#F6D3A8" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M447 337C459 318 470 300 482 282" stroke="#FFDDB0" stroke-width="11" stroke-linecap="round"/>
+  <path d="M447 337C460 356 472 374 485 393" stroke="#FFDDB0" stroke-width="11" stroke-linecap="round"/>
+  <path d="M150 610C219 594 293 582 373 577" stroke="#7E97A9" stroke-width="4" stroke-linecap="round" opacity="0.74"/>
+</svg>

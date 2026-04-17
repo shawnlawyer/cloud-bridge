@@ -27,10 +27,14 @@ class TestStewardContinuity(unittest.TestCase):
 
             record = payload["records"][0]
             self.assertEqual(record["title"], "Alpha Brief")
-            self.assertIn("Write the alpha brief.", record["detail"])
+            self.assertIn("ready", record["detail"])
             self.assertEqual(record["projectUrl"], "/projects/research-writing/research:alpha-brief/view")
-            self.assertTrue(any(action["label"] == "Open" for action in record["actions"]))
+            self.assertTrue(any(action["label"] == "Open thread" for action in record["actions"]))
             self.assertTrue(any(action["label"] == "Run thread" for action in record["actions"]))
+            self.assertEqual(record["resumeMode"], "dispatch")
+            self.assertEqual(record["visualState"], "ready")
+            self.assertTrue(record["visualAssetRefs"])
+            self.assertEqual(payload["resumeTarget"]["threadId"], record["threadId"])
 
 
 if __name__ == "__main__":
