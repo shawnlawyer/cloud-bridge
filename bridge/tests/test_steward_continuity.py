@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from bridge.steward_continuity import build_continuity_payload
+from bridge.cli import run_research_writing_run
 from bridge.workflows.research_writing import bootstrap_research_writing
 from bridge.workers import FileTaskStore, build_default_runner
 
@@ -78,6 +79,44 @@ class TestStewardContinuity(unittest.TestCase):
             self.assertEqual(payload["resumeTarget"]["state"], "review-needed")
             self.assertTrue(payload["resumeTarget"]["needsHumanReview"])
             self.assertTrue(payload["resumeTarget"]["latestResult"]["needsReview"])
+
+            review_record = next(item for item in payload["records"] if item["threadId"] == review_workflow["thread_id"])
+            ready_record = next(item for item in payload["records"] if item["threadId"] == ready_workflow["thread_id"])
+            self.assertGreater(review_record["resumeScore"], ready_record["resumeScore"])
+
+    def test_completed_thread_with_real_artifact_beats_fresh_ready_thread(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_root = Path(tmpdir) / "store"
+            review_workflow = bootstrap_research_writing(
+                store_root,
+                title="Artifact Review",
+                objective="Run to a usable draft artifact.",
+            )
+            ready_workflow = bootstrap_research_writing(
+                store_root,
+                title="Gamma Ready",
+                objective="Stay queued for later.",
+            )
+
+            run_research_writing_run(
+                {
+                    "store_root": str(store_root),
+                    "thread_id": review_workflow["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            payload = build_continuity_payload(str(store_root))
+
+            self.assertEqual(payload["resumeTarget"]["threadId"], review_workflow["thread_id"])
+            self.assertEqual(payload["resumeTarget"]["state"], "done")
+            self.assertTrue(payload["resumeTarget"]["needsHumanReview"])
+            self.assertEqual(payload["resumeTarget"]["resumeMode"], "review")
+            self.assertEqual(payload["resumeTarget"]["visualState"], "review-needed")
+            self.assertEqual(payload["resumeTarget"]["latestArtifact"]["mediaType"], "text/markdown")
+            self.assertIn("Open the latest result", payload["resumeTarget"]["nextAction"]["text"])
 
             review_record = next(item for item in payload["records"] if item["threadId"] == review_workflow["thread_id"])
             ready_record = next(item for item in payload["records"] if item["threadId"] == ready_workflow["thread_id"])
