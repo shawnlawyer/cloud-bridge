@@ -6,6 +6,8 @@ from bridge.operator import (
     render_operator_console,
     render_project_board,
     render_project_detail,
+    render_steward_frontdoor,
+    render_steward_lane,
 )
 
 
@@ -159,6 +161,83 @@ class TestOperatorConsole(unittest.TestCase):
         self.assertIn("Register Folder", html)
         self.assertIn("Scan All", html)
         self.assertIn("research-intake", html)
+
+    def test_render_steward_frontdoor_includes_next_step_and_approvals(self):
+        html = render_steward_frontdoor(
+            {
+                "title": "One Next Step",
+                "heartbeat": "Handle this first: Mortgage is overdue.",
+                "oneNextStep": {"kind": "approval", "text": "Decide now: Review budget hold."},
+                "todaySnapshot": {
+                    "pendingApprovalCount": 1,
+                    "overdueBillCount": 1,
+                    "dueRoutineCount": 1,
+                    "upcomingDateCount": 1,
+                    "activeTaskCount": 1,
+                    "activeRoomCount": 1,
+                },
+                "currentContext": {
+                    "activeTask": {"label": "Kitchen reset", "track": "home"},
+                    "activeRoom": {"roomName": "Kitchen", "mode": "standard"},
+                    "cashPressure": {"text": "Weekly cash pressure: watch."},
+                    "latestState": {"state": "activated", "detail": "Ready to move."},
+                },
+                "lastWorked": {
+                    "task": {"label": "Kitchen reset", "detail": "load dishwasher"},
+                    "room": {"label": "Kitchen", "detail": "surfaces"},
+                    "notification": {"title": "Continue with Kitchen: trash.", "detail": "Current next step."},
+                    "workerEvent": {"event": "worker_dispatch", "detail": "task_id=task-plan-1"},
+                },
+            },
+            {
+                "summaries": [
+                    {
+                        "ref": "approval:demo",
+                        "title": "Review budget hold",
+                        "detail": "Budget hold needs a decision.",
+                    }
+                ]
+            },
+        )
+
+        self.assertIn("One Next Step", html)
+        self.assertIn("Review budget hold", html)
+        self.assertIn("Pending approvals", html)
+        self.assertIn("Notifications", html)
+        self.assertIn("Routines", html)
+        self.assertIn("Dates", html)
+        self.assertIn("Tools", html)
+        self.assertIn("Due routines", html)
+        self.assertIn("Upcoming dates", html)
+        self.assertIn("Approve", html)
+        self.assertIn("Last Worked", html)
+        self.assertIn("worker_dispatch", html)
+
+    def test_render_steward_lane_includes_summaries_and_records(self):
+        html = render_steward_lane(
+            "Bills",
+            {
+                "kind": "bills",
+                "summaries": [
+                    {"title": "Mortgage", "detail": "overdue · due 2026-04-01", "ref": "bill:mortgage"}
+                ],
+                "records": [
+                    {
+                        "ref": "bill:mortgage",
+                        "name": "Mortgage",
+                        "state": "overdue",
+                        "daysUntil": -16,
+                        "actions": [{"action": "mark_paid", "label": "Mark paid"}],
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("Bills", html)
+        self.assertIn("Mortgage", html)
+        self.assertIn("&quot;state&quot;: &quot;overdue&quot;", html)
+        self.assertIn("Mark paid", html)
+        self.assertIn("/steward/action", html)
 
 
 if __name__ == "__main__":

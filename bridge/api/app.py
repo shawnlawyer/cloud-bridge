@@ -34,6 +34,15 @@ from bridge.operator import (
     render_operator_console,
     render_project_board,
     render_project_detail,
+    render_steward_frontdoor,
+    render_steward_lane,
+)
+from bridge.steward import (
+    run_steward_action,
+    run_steward_approval,
+    run_steward_home,
+    run_steward_ingest,
+    run_steward_records,
 )
 from bridge.workers import FileTaskStore
 
@@ -42,6 +51,107 @@ app = FastAPI(title="Cloud Bridge API", version="0.1.1")
 
 def _operator_store_root() -> str:
     return os.environ.get("CLOUD_BRIDGE_STORE_ROOT", "/tmp/cloud-bridge-store")
+
+
+def _worker_event_snapshot() -> dict | None:
+    try:
+        state = run_worker_store_status({"store_root": _operator_store_root(), "event_limit": 1})
+    except (TypeError, ValueError, KeyError, RuntimeError):
+        return None
+
+    event = next(iter(state.get("recent_events", [])), None)
+    if not event:
+        return None
+
+    parts = []
+    for key in ("task_id", "worker_id", "receipt_id", "artifact_id", "owner_id", "reason", "status"):
+        value = event.get(key)
+        if value:
+            parts.append(f"{key}={value}")
+
+    return {
+        "event": event.get("event", "unknown"),
+        "detail": " ".join(parts) if parts else "Latest worker event.",
+        "raw": event,
+    }
+
+
+def _decorate_steward_home(home: dict) -> dict:
+    last_worked = dict(home.get("lastWorked", {}))
+    last_worked["workerEvent"] = _worker_event_snapshot()
+    return {**home, "lastWorked": last_worked}
+
+
+@app.get("/", response_class=HTMLResponse)
+def steward_frontdoor_endpoint() -> HTMLResponse:
+    try:
+        home = _decorate_steward_home(run_steward_home())
+        approvals = run_steward_records("approvals")
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return HTMLResponse(render_steward_frontdoor(home, approvals))
+
+
+@app.get("/steward/home")
+def steward_home_endpoint() -> dict:
+    try:
+        return _decorate_steward_home(run_steward_home())
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/steward/ingest")
+def steward_ingest_endpoint(request: dict) -> dict:
+    text = request.get("text", "")
+    try:
+        return run_steward_ingest(str(text))
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/steward/records")
+def steward_records_endpoint(kind: str = Query(...)) -> dict:
+    try:
+        return run_steward_records(kind)
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/steward/view/{kind}", response_class=HTMLResponse)
+def steward_lane_view_endpoint(kind: str) -> HTMLResponse:
+    try:
+        payload = run_steward_records(kind)
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    title = str(payload.get("kind", kind)).replace("_", " ").title()
+    return HTMLResponse(render_steward_lane(title, payload))
+
+
+@app.post("/steward/approval")
+def steward_approval_endpoint(request: dict) -> dict:
+    approval_ref = request.get("approval_ref", "")
+    decision = request.get("decision", "")
+    try:
+        payload = run_steward_approval(str(approval_ref), str(decision))
+        if isinstance(payload.get("frontDoor"), dict):
+            payload["frontDoor"] = _decorate_steward_home(payload["frontDoor"])
+        return payload
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/steward/action")
+def steward_action_endpoint(request: dict) -> dict:
+    kind = request.get("kind", "")
+    record_ref = request.get("ref", "")
+    action = request.get("action", "")
+    try:
+        payload = run_steward_action(str(kind), str(record_ref), str(action))
+        if isinstance(payload.get("frontDoor"), dict):
+            payload["frontDoor"] = _decorate_steward_home(payload["frontDoor"])
+        return payload
+    except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/route")
