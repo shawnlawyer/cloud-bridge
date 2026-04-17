@@ -79,8 +79,13 @@ def _thread_record(
     latest_result = _latest_result(workflow, latest_event)
     latest_artifact = _latest_artifact(workflow)
     state = _thread_state(item, latest_result)
-    needs_human_review = _needs_human_review(item, latest_result)
-    visual_state = _visual_state(state, needs_human_review)
+    needs_human_review = _needs_human_review(item, state=state, latest_result=latest_result, latest_artifact=latest_artifact)
+    visual_state = _visual_state(
+        state,
+        needs_human_review,
+        latest_result=latest_result,
+        latest_artifact=latest_artifact,
+    )
     actions = _thread_actions(
         item,
         encoded_thread=encoded_thread,
@@ -91,7 +96,15 @@ def _thread_record(
     next_action = _next_action(item, state=state, actions=actions, latest_artifact=latest_artifact)
     why_now = _why_now(item, state=state, latest_result=latest_result, latest_artifact=latest_artifact)
     detail = _detail_text(why_now, latest_artifact=latest_artifact, latest_result=latest_result)
-    resume_score = _resume_score(item, latest_event=latest_event, latest_artifact=latest_artifact, event_recency=event_recency)
+    resume_score = _resume_score(
+        item,
+        latest_event=latest_event,
+        latest_artifact=latest_artifact,
+        latest_result=latest_result,
+        state=state,
+        needs_human_review=needs_human_review,
+        event_recency=event_recency,
+    )
 
     record = {
         "ref": f"continuity:{thread_id}",
@@ -103,7 +116,13 @@ def _thread_record(
         "resumeScore": resume_score,
         "nextAction": next_action,
         "whyNow": why_now,
-        "resumeMode": _resume_mode(state, next_action),
+        "resumeMode": _resume_mode(
+            state,
+            next_action,
+            latest_result=latest_result,
+            latest_artifact=latest_artifact,
+            needs_human_review=needs_human_review,
+        ),
         "latestWorkerEvent": latest_event,
         "latestArtifact": latest_artifact,
         "latestResult": latest_result,
@@ -279,13 +298,22 @@ def _detail_text(why_now: str, *, latest_artifact: dict | None, latest_result: d
     return " — ".join(parts[:3])
 
 
-def _resume_mode(state: str, next_action: dict) -> str:
-    if state in {"blocked", "failed", "review-needed"}:
+def _resume_mode(
+    state: str,
+    next_action: dict,
+    *,
+    latest_result: dict | None,
+    latest_artifact: dict | None,
+    needs_human_review: bool,
+) -> str:
+    if state in {"blocked", "failed", "review-needed"} or needs_human_review:
         return "review"
     if state == "ready":
         return "dispatch"
     if state == "running":
         return "monitor"
+    if state == "done" and (latest_result or latest_artifact):
+        return "review"
     if next_action.get("href"):
         return "open"
     return "dispatch"
@@ -471,16 +499,29 @@ def _result_summary(task_record: dict | None) -> dict | None:
     }
 
 
-def _needs_human_review(item: dict, latest_result: dict | None) -> bool:
+def _needs_human_review(
+    item: dict,
+    *,
+    state: str,
+    latest_result: dict | None,
+    latest_artifact: dict | None,
+) -> bool:
     return bool(
         item.get("blocked_count")
         or item.get("failed_count")
         or item.get("expired_count")
         or (latest_result and latest_result.get("needsReview"))
+        or (state == "done" and (latest_result or latest_artifact))
     )
 
 
-def _visual_state(state: str, needs_human_review: bool) -> str:
+def _visual_state(
+    state: str,
+    needs_human_review: bool,
+    *,
+    latest_result: dict | None,
+    latest_artifact: dict | None,
+) -> str:
     if state == "blocked":
         return "blocked"
     if needs_human_review or state in {"failed", "review-needed"}:
@@ -489,22 +530,89 @@ def _visual_state(state: str, needs_human_review: bool) -> str:
         return "ready"
     if state == "running":
         return "running"
+    if state == "done" and (latest_result or latest_artifact):
+        return "review-needed"
     return "quiet"
 
 
-def _resume_score(item: dict, *, latest_event: dict | None, latest_artifact: dict | None, event_recency: int) -> int:
+def _resume_score(
+    item: dict,
+    *,
+    latest_event: dict | None,
+    latest_artifact: dict | None,
+    latest_result: dict | None,
+    state: str,
+    needs_human_review: bool,
+    event_recency: int,
+) -> int:
     score = 0
-    score += item.get("blocked_count", 0) * 120
-    score += item.get("failed_count", 0) * 95
-    score += item.get("expired_count", 0) * 70
-    score += item.get("ready_count", 0) * 45
-    score += item.get("claimed_count", 0) * 25
-    score += item.get("task_counts", {}).get("done", 0) * 5
+    score += item.get("blocked_count", 0) * 170
+    score += item.get("failed_count", 0) * 145
+    score += item.get("expired_count", 0) * 125
+    score += item.get("ready_count", 0) * 30
+    score += item.get("claimed_count", 0) * 18
+    score += item.get("task_counts", {}).get("done", 0) * 8
+    score += _state_weight(state)
+    if needs_human_review:
+        score += 80
     if latest_artifact:
-        score += 12
+        score += _artifact_score(latest_artifact)
+    if latest_result:
+        score += _result_score(latest_result)
     if latest_event:
-        score += max(1, 18 - min(event_recency, 17))
+        score += _event_score(latest_event)
+        score += max(1, 10 - min(event_recency, 9))
     return score
+
+
+def _state_weight(state: str) -> int:
+    return {
+        "blocked": 90,
+        "failed": 70,
+        "review-needed": 60,
+        "ready": 25,
+        "running": 20,
+        "done": 15,
+        "quiet": 5,
+    }.get(state, 0)
+
+
+def _artifact_score(latest_artifact: dict) -> int:
+    media_type = str(latest_artifact.get("mediaType", "")).lower()
+    name = str(latest_artifact.get("name", "")).lower()
+    if name.endswith(".md") or media_type == "text/markdown":
+        return 155
+    if media_type.startswith("text/"):
+        return 130
+    return 100
+
+
+def _result_score(latest_result: dict) -> int:
+    task_type = str(latest_result.get("taskType", "")).lower()
+    output_keys = latest_result.get("outputKeys") or []
+    base = {
+        "draft": 150,
+        "review": 135,
+        "plan": 115,
+        "summarize": 95,
+    }.get(task_type, 90)
+    if output_keys:
+        base += min(len(output_keys) * 4, 16)
+    return base
+
+
+def _event_score(latest_event: dict) -> int:
+    event_name = str(latest_event.get("event", "")).lower()
+    return {
+        "artifact_written": 30,
+        "artifact_copied": 24,
+        "completed": 22,
+        "failed": 18,
+        "reclaimed": 16,
+        "released": 12,
+        "claimed": 9,
+        "enqueued": 4,
+    }.get(event_name, 6)
 
 
 def _resume_target(record: dict) -> dict:
