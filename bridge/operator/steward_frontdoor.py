@@ -494,11 +494,16 @@ def _resume_state_label(resume_target: dict | None) -> str:
         return 'Quiet'
     state = str(resume_target.get('state', 'quiet'))
     review_status = str(resume_target.get('reviewStatus', 'none'))
+    review_verdict = str((resume_target.get('reviewReceipt') or {}).get('verdict') or 'approved')
     if resume_target.get('needsHumanReview'):
         return 'Ready for review'
     if state == 'reviewed':
+        if review_verdict == 'revise':
+            return 'Changes requested'
         return 'Reviewed'
     if state == 'ready' and review_status == 'reviewed':
+        if review_verdict == 'revise':
+            return 'Revision ready'
         return 'Ready to continue'
     visual_state = str(resume_target.get('visualState', 'quiet')).replace('-', ' ')
     return visual_state.title()
@@ -517,7 +522,13 @@ def _artifact_context(artifact: dict | None) -> str:
 def _review_context(review_receipt: dict | None, review_status: str | None) -> str:
     if review_receipt:
         created_at = review_receipt.get('createdAt') or 'recently'
-        return f"Reviewed locally · {created_at}"
+        verdict = str(review_receipt.get('verdict') or 'approved')
+        note = str(review_receipt.get('note') or '').strip()
+        prefix = "Changes requested" if verdict == 'revise' else "Reviewed locally"
+        if note:
+            clipped = note if len(note) <= 90 else note[:89].rstrip() + "…"
+            return f"{prefix} · {created_at} · {clipped}"
+        return f"{prefix} · {created_at}"
     if review_status == 'pending':
         return 'Still waiting for a local review.'
     return 'No review receipt yet.'

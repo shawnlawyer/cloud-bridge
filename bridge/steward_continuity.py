@@ -17,6 +17,12 @@ def build_continuity_payload(store_root: str, task_limit: int = 20, event_limit:
     store = FileTaskStore(store_root)
     task_records = {record.task.task_id: record.to_dict() for record in store.list_tasks()}
     receipt_records = {record.receipt_id: record.to_dict() for record in store.list_receipts()}
+    blocked_task_records: dict[str, list[dict]] = {}
+    for record in state.get("blocked_tasks", []):
+        blocked_task_records.setdefault(str(record.get("thread_id")), []).append(record)
+    failed_task_records: dict[str, list[dict]] = {}
+    for record in state.get("failed_tasks", []):
+        failed_task_records.setdefault(str(record.get("thread_id")), []).append(record)
     review_receipt_records: dict[str, list[dict]] = {}
     for record in store.list_review_receipts():
         review_receipt_records.setdefault(record.thread_id, []).append(record.to_dict())
@@ -29,6 +35,8 @@ def build_continuity_payload(store_root: str, task_limit: int = 20, event_limit:
             item,
             task_records=task_records,
             receipt_records=receipt_records,
+            blocked_task_records=blocked_task_records,
+            failed_task_records=failed_task_records,
             review_receipt_records=review_receipt_records,
             recent_events=recent_events,
             workflow_cache=workflow_cache,
@@ -66,6 +74,8 @@ def _thread_record(
     *,
     task_records: dict[str, dict],
     receipt_records: dict[str, dict],
+    blocked_task_records: dict[str, list[dict]],
+    failed_task_records: dict[str, list[dict]],
     review_receipt_records: dict[str, list[dict]],
     recent_events: list[dict],
     workflow_cache: dict[str, dict | None],
@@ -89,6 +99,8 @@ def _thread_record(
         latest_result=latest_result,
         review_receipt_records=review_receipt_records,
     )
+    blocked_reason = _blocked_reason(blocked_task_records.get(thread_id, []))
+    failed_reason = _failed_reason(latest_result, failed_task_records.get(thread_id, []))
     review_status = _review_status(review_receipt, latest_artifact=latest_artifact, latest_result=latest_result)
     state = _thread_state(item, latest_result, latest_artifact=latest_artifact, review_status=review_status)
     needs_human_review = _needs_human_review(
@@ -120,6 +132,9 @@ def _thread_record(
         actions=actions,
         latest_artifact=latest_artifact,
         review_status=review_status,
+        latest_review_receipt=review_receipt,
+        blocked_reason=blocked_reason,
+        failed_reason=failed_reason,
     )
     why_now = _why_now(
         item,
@@ -127,8 +142,16 @@ def _thread_record(
         latest_result=latest_result,
         latest_artifact=latest_artifact,
         review_status=review_status,
+        latest_review_receipt=review_receipt,
+        blocked_reason=blocked_reason,
+        failed_reason=failed_reason,
     )
-    detail = _detail_text(why_now, latest_artifact=latest_artifact, latest_result=latest_result)
+    detail = _detail_text(
+        why_now,
+        latest_artifact=latest_artifact,
+        latest_result=latest_result,
+        latest_review_receipt=review_receipt,
+    )
     resume_score = _resume_score(
         item,
         latest_event=latest_event,
@@ -163,6 +186,8 @@ def _thread_record(
         "latestResult": latest_result,
         "reviewReceipt": review_receipt,
         "reviewStatus": review_status,
+        "blockedReason": blocked_reason,
+        "failedReason": failed_reason,
         "needsHumanReview": needs_human_review,
         "actions": actions,
         "visualState": visual_state,
@@ -312,30 +337,43 @@ def _next_action(
     actions: list[dict],
     latest_artifact: dict | None,
     review_status: str,
+    latest_review_receipt: dict | None,
+    blocked_reason: str | None,
+    failed_reason: str | None,
 ) -> dict:
     primary_action = next((action for action in actions if action.get("tone") == "primary"), actions[0] if actions else {})
+    review_verdict = str((latest_review_receipt or {}).get("verdict") or "approved")
 
     if state == "blocked":
-        text = "Open the thread and clear the blocked path before anything else."
+        text = _append_context("Open the thread and clear the blocked path before anything else.", blocked_reason)
     elif state == "failed":
-        text = "Review the failed worker pass and decide whether to retry or reshape it."
+        text = _append_context("Review the failed worker pass and decide whether to retry or reshape it.", failed_reason)
     elif state == "review-needed":
         if item.get("expired_count"):
             text = "Reclaim the stuck claim, then run the thread again."
         else:
             text = "Review the latest output and decide what should move next."
     elif state == "reviewed":
-        text = "Queue the next pass when you want this thread moving again."
+        if review_verdict == "revise":
+            text = "Queue the next pass with the saved revision note applied."
+        else:
+            text = "Queue the next pass when you want this thread moving again."
     elif state == "ready":
         if review_status == "reviewed":
-            text = "Run the next pass now that the last result is reviewed and the next work is lined up."
+            if review_verdict == "revise":
+                text = "Run the next pass now that the revision note is saved and the next work is lined up."
+            else:
+                text = "Run the next pass now that the last result is reviewed and the next work is lined up."
         else:
             text = "Run the next pass while the ready work is already lined up."
     elif state == "running":
         text = "Check the running pass before queuing more work behind it."
     elif latest_artifact:
         if review_status == "reviewed":
-            text = "The latest result is already reviewed. Open it again if you need the context."
+            if review_verdict == "revise":
+                text = "The latest result is reviewed with a revision note. Open it again if you need the context."
+            else:
+                text = "The latest result is already reviewed. Open it again if you need the context."
         else:
             text = "Open the latest result, then mark it reviewed when you're done."
     else:
@@ -356,11 +394,18 @@ def _why_now(
     latest_result: dict | None,
     latest_artifact: dict | None,
     review_status: str,
+    latest_review_receipt: dict | None,
+    blocked_reason: str | None,
+    failed_reason: str | None,
 ) -> str:
+    review_note = _review_note_summary(latest_review_receipt)
+    review_verdict = str((latest_review_receipt or {}).get("verdict") or "approved")
     if state == "blocked":
-        return f"{item.get('blocked_count', 0)} blocked task{'s' if item.get('blocked_count', 0) != 1 else ''} are waiting on a decision."
+        base = f"{item.get('blocked_count', 0)} blocked task{'s' if item.get('blocked_count', 0) != 1 else ''} are waiting on a decision."
+        return _append_context(base, blocked_reason)
     if state == "failed":
-        return f"{item.get('failed_count', 0)} failed task{'s' if item.get('failed_count', 0) != 1 else ''} need a clean recovery path."
+        base = f"{item.get('failed_count', 0)} failed task{'s' if item.get('failed_count', 0) != 1 else ''} need a clean recovery path."
+        return _append_context(base, failed_reason)
     if state == "review-needed":
         if item.get("expired_count"):
             return f"{item.get('expired_count', 0)} claimed task{'s' if item.get('expired_count', 0) != 1 else ''} may be stuck."
@@ -368,9 +413,15 @@ def _why_now(
             return latest_result["summary"]
         return "The latest pass needs a human look before the thread should move again."
     if state == "reviewed":
+        if review_verdict == "revise":
+            base = "Local review asked for revisions before the next pass."
+            return f"{base} {review_note}" if review_note else base
         return "The latest result was reviewed locally and is waiting for the next pass."
     if state == "ready":
         if review_status == "reviewed":
+            if review_verdict == "revise":
+                base = "Local review asked for revisions and the next pass is already lined up."
+                return f"{base} {review_note}" if review_note else base
             return "The latest result was reviewed and the next pass is already lined up."
         return f"{item.get('ready_count', 0)} ready task{'s' if item.get('ready_count', 0) != 1 else ''} can move right now on the local hub."
     if state == "running":
@@ -385,12 +436,21 @@ def _why_now(
     return "This thread is quiet, but it is still the clearest place to resume work."
 
 
-def _detail_text(why_now: str, *, latest_artifact: dict | None, latest_result: dict | None) -> str:
+def _detail_text(
+    why_now: str,
+    *,
+    latest_artifact: dict | None,
+    latest_result: dict | None,
+    latest_review_receipt: dict | None,
+) -> str:
     parts = [why_now]
     if latest_artifact:
         parts.append(f"Latest artifact: {latest_artifact['name']}")
     if latest_result:
         parts.append(f"Latest result: {latest_result['summary']}")
+    review_note = _review_note_summary(latest_review_receipt)
+    if review_note:
+        parts.append(f"Review note: {review_note}")
     return " — ".join(parts[:3])
 
 
@@ -736,6 +796,8 @@ def _resume_target(record: dict) -> dict:
         "latestResult": record["latestResult"],
         "reviewReceipt": record["reviewReceipt"],
         "reviewStatus": record["reviewStatus"],
+        "blockedReason": record["blockedReason"],
+        "failedReason": record["failedReason"],
         "needsHumanReview": record["needsHumanReview"],
         "actions": record["actions"],
         "visualState": record["visualState"],
@@ -769,8 +831,17 @@ def _latest_review_receipt(
         "artifactId": receipt.get("artifact_id"),
         "resultTaskId": receipt.get("result_task_id"),
         "status": receipt.get("status", "reviewed"),
+        "verdict": receipt.get("verdict", "approved"),
+        "note": receipt.get("note"),
         "createdAt": receipt.get("created_at"),
     }
+
+
+def _review_note_summary(review_receipt: dict | None) -> str:
+    note = (review_receipt or {}).get("note")
+    if not note:
+        return ""
+    return _truncate_inline(str(note), limit=120)
 
 
 def _review_status(
@@ -784,6 +855,42 @@ def _review_status(
     if latest_artifact or latest_result:
         return "pending"
     return "none"
+
+
+def _blocked_reason(blocked_tasks: list[dict]) -> str | None:
+    if not blocked_tasks:
+        return None
+    item = blocked_tasks[0]
+    reason = str(item.get("blocked_reason") or "").strip()
+    if not reason:
+        return None
+    worker = str(item.get("worker_label") or item.get("worker_id") or "Worker").strip()
+    task_type = str(item.get("task_type") or "").strip()
+    role = worker if not task_type else f"{worker} {task_type}"
+    return f"{role} is blocked: {reason}."
+
+
+def _failed_reason(latest_result: dict | None, failed_tasks: list[dict]) -> str | None:
+    if failed_tasks:
+        item = failed_tasks[0]
+        reason = str(item.get("last_error") or "").strip()
+        worker = str(item.get("worker_label") or item.get("worker_id") or "Worker").strip()
+        task_type = str(item.get("task_type") or "").strip()
+        role = worker if not task_type else f"{worker} {task_type}"
+        if reason:
+            return f"{role} failed: {reason}."
+    if latest_result and latest_result.get("status") == "failed":
+        summary = str(latest_result.get("summary") or "").strip()
+        worker = str(latest_result.get("workerId") or "Worker").strip()
+        if summary:
+            return f"{worker} failed: {summary}."
+    return None
+
+
+def _append_context(base: str, reason: str | None) -> str:
+    if not reason:
+        return base
+    return f"{base} {reason}"
 
 
 def _truncate_inline(value: str, limit: int = 140) -> str:

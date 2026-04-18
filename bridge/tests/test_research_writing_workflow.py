@@ -5,6 +5,8 @@ from pathlib import Path
 from bridge.cli import (
     run_research_writing_assemble,
     run_research_writing_bootstrap,
+    run_research_writing_review,
+    run_research_writing_refresh,
     run_research_writing_import_folder,
     run_research_writing_list,
     run_research_writing_run,
@@ -117,6 +119,109 @@ class TestResearchWritingWorkflow(unittest.TestCase):
             self.assertEqual(run["processed_count"], 4)
             self.assertIsNotNone(run["assembled"])
             self.assertEqual(run["status"]["task_counts"]["done"], 4)
+
+    def test_refresh_requires_review_of_latest_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir, "source.md")
+            source_path.write_text("private hub note", encoding="utf-8")
+
+            boot = run_research_writing_bootstrap(
+                {
+                    "store_root": temp_dir,
+                    "title": "Refresh Gate",
+                    "objective": "Require a review receipt before refreshing.",
+                    "source_paths": [str(source_path)],
+                    "constraints": ["local only", "zero cost"],
+                }
+            )
+
+            run_research_writing_run(
+                {
+                    "store_root": temp_dir,
+                    "thread_id": boot["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            with self.assertRaisesRegex(ValueError, "latest result has not been reviewed yet"):
+                run_research_writing_refresh(
+                    {
+                        "store_root": temp_dir,
+                        "thread_id": boot["thread_id"],
+                    }
+                )
+
+    def test_review_receipt_can_carry_verdict_and_note(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir, "source.md")
+            source_path.write_text("private hub note", encoding="utf-8")
+
+            boot = run_research_writing_bootstrap(
+                {
+                    "store_root": temp_dir,
+                    "title": "Review Notes",
+                    "objective": "Carry a local revision note into the next pass.",
+                    "source_paths": [str(source_path)],
+                    "constraints": ["local only", "zero cost"],
+                }
+            )
+
+            run_research_writing_run(
+                {
+                    "store_root": temp_dir,
+                    "thread_id": boot["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            reviewed = run_research_writing_review(
+                {
+                    "store_root": temp_dir,
+                    "thread_id": boot["thread_id"],
+                    "verdict": "revise",
+                    "note": "Tighten the opening and add one concrete example.",
+                }
+            )
+            refreshed = run_research_writing_refresh(
+                {
+                    "store_root": temp_dir,
+                    "thread_id": boot["thread_id"],
+                }
+            )
+
+            self.assertEqual(reviewed["review_receipt"]["verdict"], "revise")
+            self.assertEqual(
+                reviewed["review_receipt"]["note"],
+                "Tighten the opening and add one concrete example.",
+            )
+            self.assertEqual(refreshed["status"]["review_receipt_count"], 1)
+            self.assertEqual(len(refreshed["status"]["sources"]), 1)
+            self.assertEqual(refreshed["status"]["sources"][0]["path"], str(source_path))
+
+            store = FileTaskStore(temp_dir)
+            planner_task = next(
+                store.get(task_id).task
+                for task_id in refreshed["task_ids"]
+                if ":planner:" in task_id
+            )
+            scribe_task = next(
+                store.get(task_id).task
+                for task_id in refreshed["task_ids"]
+                if ":scribe:" in task_id
+            )
+
+            self.assertIn(
+                "Address requested changes: Tighten the opening and add one concrete example.",
+                planner_task.payload["items"],
+            )
+            self.assertIn(
+                "Revise the draft to address: Tighten the opening and add one concrete example.",
+                scribe_task.payload["points"],
+            )
 
 
 if __name__ == "__main__":

@@ -142,7 +142,8 @@ def refresh_research_writing(
 
     store = FileTaskStore(store_root)
     owner_id = f"workflow:{thread_id}"
-    packet = _load_packet(store, list(store.list_artifacts(owner_id=owner_id)))
+    workflow_artifacts = list(store.list_artifacts(owner_id=owner_id))
+    packet = _load_packet(store, workflow_artifacts)
     resolved_title = title or packet.get("title")
     resolved_objective = objective or packet.get("objective")
     resolved_constraints = list(constraints) if constraints is not None else list(packet.get("constraints", []))
@@ -151,7 +152,19 @@ def refresh_research_writing(
     if not resolved_objective:
         raise ValueError("objective is required when the workflow packet is missing")
 
-    source_artifacts, source_packets, excerpt_texts = _import_source_artifacts(store, owner_id, source_paths)
+    latest_review = _latest_review_receipt_for_artifact(
+        store,
+        thread_id,
+        artifact_id=_latest_artifact_id(workflow_artifacts),
+    )
+    review_feedback = _review_feedback_payload(latest_review)
+    source_artifacts, source_packets, excerpt_texts = _refresh_source_context(
+        store,
+        owner_id=owner_id,
+        packet=packet,
+        workflow_artifacts=workflow_artifacts,
+        source_paths=source_paths,
+    )
     packet_artifact = _write_packet(
         store,
         owner_id=owner_id,
@@ -160,6 +173,7 @@ def refresh_research_writing(
         objective=resolved_objective,
         constraints=resolved_constraints,
         source_packets=source_packets,
+        latest_review=review_feedback,
     )
     revision = _revision_token()
     tasks = _build_workflow_tasks(
@@ -170,6 +184,7 @@ def refresh_research_writing(
         source_artifacts=source_artifacts,
         excerpt_texts=excerpt_texts,
         revision=revision,
+        review_feedback=review_feedback,
     )
     for task in tasks:
         enqueue_task(store_root, task, max_attempts=max_attempts)
@@ -194,7 +209,7 @@ def describe_research_writing(store_root: str | Path, thread_id: str) -> dict:
     review_receipts = list(store.list_review_receipts(thread_id=thread_id))
     counts = Counter(record.status for record in tasks)
     packet = _load_packet(store, artifacts)
-    latest_draft = _latest_artifact(artifacts, lambda item: item.name != _PACKET_NAME)
+    latest_draft = _artifact_by_id(artifacts, _latest_artifact_id(artifacts))
     latest_review_receipt = None
     if latest_draft is not None:
         matches = [receipt for receipt in review_receipts if receipt.artifact_id == latest_draft.artifact_id]
@@ -292,6 +307,20 @@ def assemble_research_writing(store_root: str | Path, thread_id: str, name: str 
             ]
         )
 
+    latest_review = state.get("latest_review_receipt") or {}
+    if latest_review:
+        verdict = "Changes requested" if latest_review.get("verdict") == "revise" else "Approved"
+        lines.extend(
+            [
+                "## Latest Review",
+                f"- Verdict: {verdict}",
+                f"- Recorded: {latest_review.get('created_at', 'recently')}",
+            ]
+        )
+        if latest_review.get("note"):
+            lines.append(f"- Note: {latest_review['note']}")
+        lines.append("")
+
     archivist = tasks_by_worker.get("archivist", {}).get("result") or {}
     if archivist:
         output = archivist.get("output", {})
@@ -358,19 +387,59 @@ def collect_research_writing_sources(
     return {"source_paths": source_paths, "skipped": skipped}
 
 
-def _plan_items(objective: str, source_names: list[str], constraints: list[str] | tuple[str, ...]) -> list[str]:
+def _plan_items(
+    objective: str,
+    source_names: list[str],
+    constraints: list[str] | tuple[str, ...],
+    *,
+    review_feedback: dict | None = None,
+) -> list[str]:
     items = [f"Clarify objective: {objective}"]
+    review_item = _review_feedback_item(review_feedback)
+    if review_item:
+        items.append(review_item)
     items.extend(f"Read source: {name}" for name in source_names)
     items.extend(f"Honor constraint: {item}" for item in constraints)
     items.extend(["Extract core claims", "Outline the argument", "Draft the first pass"])
     return items
 
 
-def _draft_points(objective: str, source_names: list[str], constraints: list[str] | tuple[str, ...]) -> list[str]:
+def _draft_points(
+    objective: str,
+    source_names: list[str],
+    constraints: list[str] | tuple[str, ...],
+    *,
+    review_feedback: dict | None = None,
+) -> list[str]:
     points = [objective]
+    review_point = _review_feedback_point(review_feedback)
+    if review_point:
+        points.append(review_point)
     points.extend(f"Use source: {name}" for name in source_names)
     points.extend(f"Constraint: {item}" for item in constraints)
     return points
+
+
+def _review_feedback_item(review_feedback: dict | None) -> str | None:
+    if not review_feedback:
+        return None
+    note = str(review_feedback.get("note") or "").strip()
+    if review_feedback.get("verdict") == "revise":
+        return f"Address requested changes: {note}" if note else "Address the requested changes before the next draft."
+    if note:
+        return f"Carry forward review note: {note}"
+    return None
+
+
+def _review_feedback_point(review_feedback: dict | None) -> str | None:
+    if not review_feedback:
+        return None
+    note = str(review_feedback.get("note") or "").strip()
+    if review_feedback.get("verdict") == "revise":
+        return f"Revise the draft to address: {note}" if note else "Revise the draft before the next pass."
+    if note:
+        return f"Review note: {note}"
+    return None
 
 
 def _import_source_artifacts(
@@ -406,6 +475,39 @@ def _import_source_artifacts(
     return source_artifacts, source_packets, excerpt_texts
 
 
+def _refresh_source_context(
+    store: FileTaskStore,
+    *,
+    owner_id: str,
+    packet: dict,
+    workflow_artifacts: list,
+    source_paths: list[str] | tuple[str, ...],
+) -> tuple[list, list[dict], list[str]]:
+    imported_artifacts, imported_packets, imported_excerpts = _import_source_artifacts(store, owner_id, source_paths)
+    artifacts_by_id = {artifact.artifact_id: artifact for artifact in workflow_artifacts}
+    merged: dict[str, tuple[object, dict, str]] = {}
+
+    for source in list(packet.get("sources", [])):
+        artifact = artifacts_by_id.get(source.get("artifact_id"))
+        if artifact is None:
+            continue
+        key = _source_context_key(source)
+        merged[key] = (artifact, source, str(source.get("excerpt") or ""))
+
+    for artifact, source, excerpt in zip(imported_artifacts, imported_packets, imported_excerpts, strict=True):
+        key = _source_context_key(source)
+        merged[key] = (artifact, source, excerpt)
+
+    source_artifacts = [item[0] for item in merged.values()]
+    source_packets = [item[1] for item in merged.values()]
+    excerpt_texts = [item[2] for item in merged.values()]
+    return source_artifacts, source_packets, excerpt_texts
+
+
+def _source_context_key(source: dict) -> str:
+    return str(source.get("path") or source.get("artifact_id") or source.get("name") or "")
+
+
 def _write_packet(
     store: FileTaskStore,
     *,
@@ -415,6 +517,7 @@ def _write_packet(
     objective: str,
     constraints: list[str] | tuple[str, ...],
     source_packets: list[dict],
+    latest_review: dict | None = None,
 ):
     packet = {
         "thread_id": thread_id,
@@ -422,6 +525,7 @@ def _write_packet(
         "objective": objective,
         "constraints": list(constraints),
         "sources": source_packets,
+        "latest_review": latest_review,
         "created_at": _utc_now_text(),
     }
     return store.write_artifact(
@@ -441,12 +545,13 @@ def _build_workflow_tasks(
     source_artifacts: list,
     excerpt_texts: list[str],
     revision: str | None = None,
+    review_feedback: dict | None = None,
 ) -> tuple[WorkerTask, ...]:
     suffix = f":{revision}" if revision else ""
     source_names = [artifact.name for artifact in source_artifacts]
     source_artifact_ids = [artifact.artifact_id for artifact in source_artifacts]
-    plan_items = _plan_items(objective, source_names, constraints)
-    draft_points = _draft_points(objective, source_names, constraints)
+    plan_items = _plan_items(objective, source_names, constraints, review_feedback=review_feedback)
+    draft_points = _draft_points(objective, source_names, constraints, review_feedback=review_feedback)
     return (
         WorkerTask(
             task_id=f"{thread_id}:guardian{suffix}",
@@ -458,6 +563,7 @@ def _build_workflow_tasks(
                 "constraints": list(constraints),
                 "proposed_effects": [],
                 "source_artifact_ids": source_artifact_ids,
+                "review_feedback": review_feedback,
             },
             requires=("review",),
             effects=(),
@@ -471,6 +577,7 @@ def _build_workflow_tasks(
                 "texts": excerpt_texts,
                 "source_names": source_names,
                 "source_artifact_ids": source_artifact_ids,
+                "review_feedback": review_feedback,
             },
             requires=("summarize",),
             effects=(),
@@ -484,6 +591,7 @@ def _build_workflow_tasks(
                 "items": plan_items,
                 "objective": objective,
                 "constraints": list(constraints),
+                "review_feedback": review_feedback,
             },
             requires=("plan",),
             effects=(),
@@ -497,6 +605,7 @@ def _build_workflow_tasks(
                 "title": title,
                 "points": draft_points,
                 "source_artifact_ids": source_artifact_ids,
+                "review_feedback": review_feedback,
             },
             requires=("draft",),
             effects=(),
@@ -540,6 +649,52 @@ def _latest_artifact(artifacts: list, predicate) -> object | None:
     if not matches:
         return None
     return max(matches, key=lambda artifact: artifact.created_at)
+
+
+def _latest_artifact_id(artifacts: list) -> str | None:
+    ranked = []
+    for artifact in artifacts:
+        name = str(artifact.name).lower()
+        media_type = str(artifact.media_type).lower()
+        if name == _PACKET_NAME:
+            continue
+        priority = 2 if name.endswith(".md") or media_type == "text/markdown" else 1
+        ranked.append((priority, artifact.created_at, artifact.artifact_id))
+    if not ranked:
+        return None
+    ranked.sort()
+    return ranked[-1][2]
+
+
+def _artifact_by_id(artifacts: list, artifact_id: str | None):
+    if artifact_id is None:
+        return None
+    for artifact in artifacts:
+        if artifact.artifact_id == artifact_id:
+            return artifact
+    return None
+
+
+def _latest_review_receipt_for_artifact(store: FileTaskStore, thread_id: str, *, artifact_id: str | None):
+    if artifact_id is None:
+        return None
+    matches = [receipt for receipt in store.list_review_receipts(thread_id=thread_id) if receipt.artifact_id == artifact_id]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item.created_at)
+
+
+def _review_feedback_payload(review_receipt) -> dict | None:
+    if review_receipt is None:
+        return None
+    return {
+        "review_ref": review_receipt.review_ref,
+        "artifact_id": review_receipt.artifact_id,
+        "result_task_id": review_receipt.result_task_id,
+        "verdict": review_receipt.verdict,
+        "note": review_receipt.note,
+        "created_at": review_receipt.created_at,
+    }
 
 
 def _revision_token() -> str:

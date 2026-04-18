@@ -39,6 +39,7 @@ from bridge.operator import (
     render_steward_frontdoor,
     render_steward_lane,
 )
+from bridge.operator.steward_priorities import prioritize_one_next_step
 from bridge.operator.steward_visuals import resolve_steward_visual_path
 from bridge.steward import (
     run_steward_action,
@@ -225,14 +226,65 @@ def _resume_last_worked(resume_target: dict | None, worker_event: dict | None) -
     }
 
 
+def _enrich_workflows_with_continuity(workflows: list[dict], continuity: dict) -> list[dict]:
+    records = {
+        str(item.get("threadId")): item
+        for item in continuity.get("records", [])
+        if isinstance(item, dict) and item.get("threadId")
+    }
+    enriched = []
+    for workflow in workflows:
+        record = records.get(str(workflow.get("thread_id")))
+        if not record:
+            enriched.append(workflow)
+            continue
+        next_action = record.get("nextAction") or {}
+        board_actions = []
+        if next_action.get("label") and (next_action.get("href") or next_action.get("postUrl")):
+            board_actions.append(
+                {
+                    "label": next_action.get("label"),
+                    "tone": "primary",
+                    "href": next_action.get("href"),
+                    "postUrl": next_action.get("postUrl"),
+                }
+            )
+        for action in list(record.get("actions") or []):
+            duplicate = any(
+                existing.get("label") == action.get("label")
+                and existing.get("href") == action.get("href")
+                and existing.get("postUrl") == action.get("postUrl")
+                for existing in board_actions
+            )
+            if duplicate:
+                continue
+            board_actions.append(action)
+        enriched.append(
+            {
+                **workflow,
+                "board_state": record.get("state"),
+                "board_visual_state": record.get("visualState"),
+                "review_receipt": record.get("reviewReceipt"),
+                "review_status": record.get("reviewStatus"),
+                "needs_human_review": record.get("needsHumanReview"),
+                "board_detail": record.get("whyNow") or record.get("detail"),
+                "board_next_action": next_action,
+                "board_actions": board_actions[:2],
+            }
+        )
+    return enriched
+
+
 def _decorate_steward_home(home: dict) -> dict:
     continuity = build_continuity_payload(_operator_store_root())
     worker_event = _worker_event_snapshot()
+    one_next_step = prioritize_one_next_step(home.get("oneNextStep") or {}, continuity.get("resumeTarget"))
     last_worked = _decorate_last_worked(home, continuity, worker_event)
     snapshot = dict(home.get("todaySnapshot", {}))
     snapshot["continuityCount"] = len(continuity.get("records", []))
     return {
         **home,
+        "oneNextStep": one_next_step,
         "lastWorked": last_worked,
         "todaySnapshot": snapshot,
         "continuity": continuity,
@@ -461,7 +513,9 @@ def drop_folder_scan_endpoint(name: str | None = None) -> dict:
 @app.get("/projects/research-writing")
 def research_writing_list_endpoint() -> dict:
     try:
-        return run_research_writing_list({"store_root": _operator_store_root()})
+        workflows = run_research_writing_list({"store_root": _operator_store_root()})["workflows"]
+        continuity = build_continuity_payload(_operator_store_root())
+        return {"workflows": _enrich_workflows_with_continuity(workflows, continuity)}
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -470,6 +524,8 @@ def research_writing_list_endpoint() -> dict:
 def research_writing_board_endpoint() -> HTMLResponse:
     try:
         workflows = run_research_writing_list({"store_root": _operator_store_root()})["workflows"]
+        continuity = build_continuity_payload(_operator_store_root())
+        workflows = _enrich_workflows_with_continuity(workflows, continuity)
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return HTMLResponse(render_project_board(workflows))
@@ -531,6 +587,8 @@ def research_writing_review_endpoint(
     thread_id: str,
     artifact_id: str | None = Query(default=None),
     result_task_id: str | None = Query(default=None),
+    verdict: str = Query(default="approved"),
+    note: str | None = Query(default=None),
 ) -> dict:
     try:
         return run_research_writing_review(
@@ -539,6 +597,8 @@ def research_writing_review_endpoint(
                 "thread_id": thread_id,
                 "artifact_id": artifact_id,
                 "result_task_id": result_task_id,
+                "verdict": verdict,
+                "note": note,
             }
         )
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:

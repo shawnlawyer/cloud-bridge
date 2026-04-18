@@ -52,6 +52,23 @@ class TestOperatorConsole(unittest.TestCase):
                     "source_count": 2,
                     "artifact_count": 3,
                     "task_counts": {"done": 2, "pending": 2},
+                    "board_state": "ready",
+                    "review_status": "reviewed",
+                    "board_detail": "The latest result was reviewed and the next pass is already lined up.",
+                    "board_next_action": {
+                        "text": "Run the next pass now that the last result is reviewed and the next work is lined up."
+                    },
+                    "board_actions": [
+                        {
+                            "label": "Run thread",
+                            "postUrl": "/projects/research-writing/research%3Aalpha/run?dispatch_limit=8&pass_limit=4",
+                        },
+                        {
+                            "label": "Open latest result",
+                            "href": "/artifacts/artifact%3A1",
+                            "tone": "secondary",
+                        },
+                    ],
                 }
             ]
         )
@@ -78,13 +95,25 @@ class TestOperatorConsole(unittest.TestCase):
                         "size_bytes": 123,
                     }
                 ],
+                "latest_draft_artifact_id": "artifact:1",
+                "latest_review_receipt": {
+                    "created_at": "2026-04-18T09:20:00Z",
+                    "verdict": "revise",
+                    "note": "Tighten the opening.",
+                },
             }
         )
 
         self.assertIn("Create Project", board)
         self.assertIn("Open project", board)
+        self.assertIn("Ready to continue", board)
+        self.assertIn("Run the next pass now that the last result is reviewed", board)
+        self.assertIn('data-post-url="/projects/research-writing/research%3Aalpha/run?dispatch_limit=8&amp;pass_limit=4"', board)
         self.assertIn("Run Thread", detail)
         self.assertIn("Run Dispatch", detail)
+        self.assertIn("Save Review", detail)
+        self.assertIn("Needs revision", detail)
+        self.assertIn("Tighten the opening.", detail)
         self.assertIn("Steward approved=True", detail)
 
     def test_render_inbox_page_includes_actions_and_steward_label(self):

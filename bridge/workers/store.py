@@ -15,6 +15,7 @@ from .runner import LocalWorkerRunner
 _TASK_STATUS_VALUES = frozenset({"pending", "claimed", "done", "failed"})
 _RECEIPT_STATUS_VALUES = frozenset({"open", "completed", "released"})
 _REVIEW_STATUS_VALUES = frozenset({"reviewed"})
+_REVIEW_VERDICT_VALUES = frozenset({"approved", "revise"})
 _TASK_STATUS_PRIORITY = {"pending": 0, "claimed": 1, "done": 2, "failed": 2}
 _RECEIPT_STATUS_PRIORITY = {"open": 0, "completed": 1, "released": 1}
 
@@ -140,15 +141,21 @@ class ReviewReceiptRecord:
     artifact_id: str | None
     result_task_id: str | None
     status: str
+    verdict: str
+    note: str | None
     created_at: str
 
     def __post_init__(self) -> None:
         if self.status not in _REVIEW_STATUS_VALUES:
             raise ValueError(f"Unsupported review status: {self.status}")
+        if self.verdict not in _REVIEW_VERDICT_VALUES:
+            raise ValueError(f"Unsupported review verdict: {self.verdict}")
         if not isinstance(self.review_ref, str) or not self.review_ref:
             raise ValueError("review_ref must be a non-empty string")
         if not isinstance(self.thread_id, str) or not self.thread_id:
             raise ValueError("thread_id must be a non-empty string")
+        if self.note is not None and (not isinstance(self.note, str) or not self.note.strip()):
+            raise ValueError("note must be a non-empty string when provided")
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +164,8 @@ class ReviewReceiptRecord:
             "artifact_id": self.artifact_id,
             "result_task_id": self.result_task_id,
             "status": self.status,
+            "verdict": self.verdict,
+            "note": self.note,
             "created_at": self.created_at,
         }
 
@@ -168,6 +177,8 @@ class ReviewReceiptRecord:
             artifact_id=data.get("artifact_id"),
             result_task_id=data.get("result_task_id"),
             status=data["status"],
+            verdict=data.get("verdict", "approved"),
+            note=data.get("note"),
             created_at=data["created_at"],
         )
 
@@ -412,6 +423,8 @@ class FileTaskStore:
         artifact_id: str | None = None,
         result_task_id: str | None = None,
         status: str = "reviewed",
+        verdict: str = "approved",
+        note: str | None = None,
     ) -> ReviewReceiptRecord:
         if not isinstance(thread_id, str) or not thread_id:
             raise ValueError("thread_id must be a non-empty string")
@@ -421,12 +434,19 @@ class FileTaskStore:
             raise ValueError("result_task_id must be a non-empty string when provided")
         if status not in _REVIEW_STATUS_VALUES:
             raise ValueError(f"Unsupported review status: {status}")
+        if verdict not in _REVIEW_VERDICT_VALUES:
+            raise ValueError(f"Unsupported review verdict: {verdict}")
+        normalized_note = note.strip() if isinstance(note, str) else None
+        if note is not None and not normalized_note:
+            raise ValueError("note must be a non-empty string when provided")
 
         review_ref = self._build_review_ref(
             thread_id=thread_id,
             artifact_id=artifact_id,
             result_task_id=result_task_id,
             status=status,
+            verdict=verdict,
+            note=normalized_note,
         )
         path = self._review_receipt_path(review_ref)
         if path.exists():
@@ -438,6 +458,8 @@ class FileTaskStore:
             artifact_id=artifact_id,
             result_task_id=result_task_id,
             status=status,
+            verdict=verdict,
+            note=normalized_note,
             created_at=_format_utc(_utc_now()),
         )
         self._write_review_receipt(receipt)
@@ -450,6 +472,8 @@ class FileTaskStore:
                 "artifact_id": artifact_id,
                 "result_task_id": result_task_id,
                 "status": status,
+                "verdict": verdict,
+                "note": normalized_note,
             },
         )
         return receipt
@@ -704,9 +728,11 @@ class FileTaskStore:
         artifact_id: str | None,
         result_task_id: str | None,
         status: str,
+        verdict: str,
+        note: str | None,
     ) -> str:
         digest = hashlib.sha256(
-            f"{thread_id}:{artifact_id or ''}:{result_task_id or ''}:{status}".encode("utf-8")
+            f"{thread_id}:{artifact_id or ''}:{result_task_id or ''}:{status}:{verdict}:{note or ''}".encode("utf-8")
         ).hexdigest()[:12]
         return f"review:{digest}"
 

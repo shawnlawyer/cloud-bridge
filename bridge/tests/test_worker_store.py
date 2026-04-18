@@ -164,6 +164,54 @@ class TestWorkerStore(unittest.TestCase):
             self.assertEqual(len(store.list_receipts()), 1)
             self.assertLessEqual(store.summarize()["event_count"], 5)
 
+    def test_record_review_receipt_is_local_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = FileTaskStore(temp_dir)
+
+            first = store.record_review_receipt(
+                "research:alpha",
+                artifact_id="artifact:alpha",
+                result_task_id="research:alpha:scribe",
+                verdict="revise",
+                note="Tighten the opening before the next pass.",
+            )
+            second = store.record_review_receipt(
+                "research:alpha",
+                artifact_id="artifact:alpha",
+                result_task_id="research:alpha:scribe",
+                verdict="revise",
+                note="Tighten the opening before the next pass.",
+            )
+
+            self.assertEqual(first.review_ref, second.review_ref)
+            self.assertEqual(len(store.list_review_receipts(thread_id="research:alpha")), 1)
+            self.assertEqual(store.list_review_receipts(thread_id="research:alpha")[0].artifact_id, "artifact:alpha")
+            self.assertEqual(store.list_review_receipts(thread_id="research:alpha")[0].verdict, "revise")
+            self.assertEqual(
+                store.list_review_receipts(thread_id="research:alpha")[0].note,
+                "Tighten the opening before the next pass.",
+            )
+
+    def test_review_receipt_note_changes_create_new_receipt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = FileTaskStore(temp_dir)
+
+            first = store.record_review_receipt(
+                "research:alpha",
+                artifact_id="artifact:alpha",
+                verdict="approved",
+                note="Looks solid.",
+            )
+            second = store.record_review_receipt(
+                "research:alpha",
+                artifact_id="artifact:alpha",
+                verdict="approved",
+                note="Add one clearer close.",
+            )
+
+            self.assertNotEqual(first.review_ref, second.review_ref)
+            self.assertEqual(len(store.list_review_receipts(thread_id="research:alpha")), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

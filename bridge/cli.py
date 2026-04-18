@@ -410,6 +410,8 @@ def run_research_writing_review(request: dict) -> dict:
     thread_id = request.get("thread_id")
     artifact_id = request.get("artifact_id")
     result_task_id = request.get("result_task_id")
+    verdict = request.get("verdict", "approved")
+    note = request.get("note")
 
     if not isinstance(store_root, str) or not store_root:
         raise ValueError("store_root must be a non-empty string")
@@ -419,6 +421,10 @@ def run_research_writing_review(request: dict) -> dict:
         raise ValueError("artifact_id must be a non-empty string when provided")
     if result_task_id is not None and (not isinstance(result_task_id, str) or not result_task_id):
         raise ValueError("result_task_id must be a non-empty string when provided")
+    if not isinstance(verdict, str) or not verdict:
+        raise ValueError("verdict must be a non-empty string")
+    if note is not None and (not isinstance(note, str) or not note.strip()):
+        raise ValueError("note must be a non-empty string when provided")
 
     status = describe_research_writing(store_root, thread_id)
     store = FileTaskStore(store_root)
@@ -430,6 +436,8 @@ def run_research_writing_review(request: dict) -> dict:
         thread_id,
         artifact_id=resolved_artifact_id,
         result_task_id=result_task_id,
+        verdict=verdict,
+        note=note,
     )
     record_many(["research_writing_review", "review_recorded"])
     return {

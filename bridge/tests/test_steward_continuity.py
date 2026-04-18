@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from bridge.steward_continuity import build_continuity_payload
-from bridge.cli import run_research_writing_run
+from bridge.cli import run_research_writing_refresh, run_research_writing_run
 from bridge.workflows.research_writing import bootstrap_research_writing
 from bridge.workers import FileTaskStore, build_default_runner
 
@@ -121,6 +121,171 @@ class TestStewardContinuity(unittest.TestCase):
             review_record = next(item for item in payload["records"] if item["threadId"] == review_workflow["thread_id"])
             ready_record = next(item for item in payload["records"] if item["threadId"] == ready_workflow["thread_id"])
             self.assertGreater(review_record["resumeScore"], ready_record["resumeScore"])
+
+    def test_review_receipt_moves_thread_into_reviewed_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_root = Path(tmpdir) / "store"
+            workflow = bootstrap_research_writing(
+                store_root,
+                title="Reviewed Draft",
+                objective="Produce a draft and mark it reviewed.",
+            )
+
+            run_research_writing_run(
+                {
+                    "store_root": str(store_root),
+                    "thread_id": workflow["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            first_payload = build_continuity_payload(str(store_root))
+            artifact_id = first_payload["resumeTarget"]["latestArtifact"]["artifactId"]
+            store = FileTaskStore(store_root)
+            store.record_review_receipt(workflow["thread_id"], artifact_id=artifact_id)
+
+            payload = build_continuity_payload(str(store_root))
+
+            self.assertEqual(payload["resumeTarget"]["threadId"], workflow["thread_id"])
+            self.assertEqual(payload["resumeTarget"]["state"], "reviewed")
+            self.assertEqual(payload["resumeTarget"]["reviewStatus"], "reviewed")
+            self.assertFalse(payload["resumeTarget"]["needsHumanReview"])
+            self.assertEqual(payload["resumeTarget"]["resumeMode"], "continue")
+            self.assertEqual(payload["resumeTarget"]["visualState"], "reviewed")
+            self.assertIsNotNone(payload["resumeTarget"]["reviewReceipt"])
+            self.assertTrue(any(action["label"] == "Continue thread" for action in payload["resumeTarget"]["actions"]))
+
+    def test_reviewed_thread_can_be_refreshed_into_ready_to_continue(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_root = Path(tmpdir) / "store"
+            workflow = bootstrap_research_writing(
+                store_root,
+                title="Continue Reviewed Draft",
+                objective="Review a draft, then queue the next pass.",
+            )
+
+            run_research_writing_run(
+                {
+                    "store_root": str(store_root),
+                    "thread_id": workflow["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            first_payload = build_continuity_payload(str(store_root))
+            artifact_id = first_payload["resumeTarget"]["latestArtifact"]["artifactId"]
+            store = FileTaskStore(store_root)
+            store.record_review_receipt(workflow["thread_id"], artifact_id=artifact_id)
+
+            run_research_writing_refresh(
+                {
+                    "store_root": str(store_root),
+                    "thread_id": workflow["thread_id"],
+                }
+            )
+
+            payload = build_continuity_payload(str(store_root))
+
+            self.assertEqual(payload["resumeTarget"]["threadId"], workflow["thread_id"])
+            self.assertEqual(payload["resumeTarget"]["state"], "ready")
+            self.assertEqual(payload["resumeTarget"]["reviewStatus"], "reviewed")
+            self.assertFalse(payload["resumeTarget"]["needsHumanReview"])
+            self.assertEqual(payload["resumeTarget"]["resumeMode"], "continue")
+            self.assertEqual(payload["resumeTarget"]["visualState"], "ready")
+            self.assertIn("Run the next pass now that the last result is reviewed", payload["resumeTarget"]["nextAction"]["text"])
+
+    def test_revision_note_shapes_reviewed_resume_target(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_root = Path(tmpdir) / "store"
+            workflow = bootstrap_research_writing(
+                store_root,
+                title="Revision Requested",
+                objective="Carry a revision note into continuity.",
+            )
+
+            run_research_writing_run(
+                {
+                    "store_root": str(store_root),
+                    "thread_id": workflow["thread_id"],
+                    "dispatch_limit": 8,
+                    "pass_limit": 4,
+                    "auto_assemble": True,
+                }
+            )
+
+            first_payload = build_continuity_payload(str(store_root))
+            artifact_id = first_payload["resumeTarget"]["latestArtifact"]["artifactId"]
+            store = FileTaskStore(store_root)
+            store.record_review_receipt(
+                workflow["thread_id"],
+                artifact_id=artifact_id,
+                verdict="revise",
+                note="Tighten the opening and keep the draft grounded.",
+            )
+
+            payload = build_continuity_payload(str(store_root))
+
+            self.assertEqual(payload["resumeTarget"]["state"], "reviewed")
+            self.assertEqual(payload["resumeTarget"]["reviewReceipt"]["verdict"], "revise")
+            self.assertIn("revision note", payload["resumeTarget"]["nextAction"]["text"])
+            self.assertIn("Tighten the opening", payload["resumeTarget"]["whyNow"])
+
+    def test_blocked_thread_surfaces_exact_blocked_reason(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_root = Path(tmpdir) / "store"
+            workflow = bootstrap_research_writing(
+                store_root,
+                title="Blocked Planner",
+                objective="Show why this thread is blocked.",
+            )
+            store = FileTaskStore(store_root)
+            planner_task_id = f'{workflow["thread_id"]}:planner'
+            planner_record = store.get(planner_task_id)
+            blocked_planner = replace(
+                planner_record,
+                task=replace(
+                    planner_record.task,
+                    payload={
+                        key: value for key, value in planner_record.task.payload.items() if key != "items"
+                    },
+                ),
+            )
+            store.upsert_task_record(blocked_planner, force=True)
+
+            payload = build_continuity_payload(str(store_root))
+
+            self.assertEqual(payload["resumeTarget"]["state"], "blocked")
+            self.assertIn("missing payload keys: items", payload["resumeTarget"]["blockedReason"])
+            self.assertIn("missing payload keys: items", payload["resumeTarget"]["whyNow"])
+            self.assertIn("Planner plan is blocked", payload["resumeTarget"]["nextAction"]["text"])
+
+    def test_failed_thread_surfaces_exact_failure_reason(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_root = Path(tmpdir) / "store"
+            workflow = bootstrap_research_writing(
+                store_root,
+                title="Failed Planner",
+                objective="Show why this thread failed.",
+            )
+            store = FileTaskStore(store_root)
+            planner_task_id = f'{workflow["thread_id"]}:planner'
+            planner_record = store.get(planner_task_id)
+            store.upsert_task_record(replace(planner_record, max_attempts=1), force=True)
+
+            receipt = store.claim("planner", predicate=lambda record: record.task.thread_id == workflow["thread_id"])
+            self.assertIsNotNone(receipt)
+            store.release(receipt.receipt_id, "planner input broke")
+
+            payload = build_continuity_payload(str(store_root))
+
+            self.assertEqual(payload["resumeTarget"]["state"], "failed")
+            self.assertIn("planner input broke", payload["resumeTarget"]["failedReason"])
+            self.assertIn("planner input broke", payload["resumeTarget"]["whyNow"])
+            self.assertIn("Planner plan failed", payload["resumeTarget"]["nextAction"]["text"])
 
 
 if __name__ == "__main__":
