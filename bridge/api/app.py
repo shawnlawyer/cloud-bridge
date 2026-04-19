@@ -54,6 +54,27 @@ from bridge.workers import FileTaskStore
 
 app = FastAPI(title="Cloud Bridge API", version="0.1.1")
 
+_ONE_NEXT_KIND_TO_LANE = {
+    "approval": "approvals",
+    "bill": "bills",
+    "cash": "bills",
+    "followup": "followups",
+    "important_date": "important_dates",
+    "room": "rooms",
+    "routine": "routines",
+    "task": "tasks",
+}
+
+_LANE_OPEN_LABELS = {
+    "approvals": "Open approvals",
+    "bills": "Open bills",
+    "followups": "Open follow-ups",
+    "important_dates": "Open dates",
+    "rooms": "Open rooms",
+    "routines": "Open routines",
+    "tasks": "Open tasks",
+}
+
 
 def _operator_store_root() -> str:
     return os.environ.get("CLOUD_BRIDGE_STORE_ROOT", "/tmp/cloud-bridge-store")
@@ -275,10 +296,158 @@ def _enrich_workflows_with_continuity(workflows: list[dict], continuity: dict) -
     return enriched
 
 
+def _decorate_one_next_step(one_next_step: dict, current_context: dict | None = None) -> dict:
+    step = dict(one_next_step or {})
+    kind = str(step.get("kind") or "").strip().lower()
+    if not kind:
+        return step
+    if kind.startswith("continuity_"):
+        return step
+
+    if kind == "cash":
+        detail = ((current_context or {}).get("cashPressure") or {}).get("text")
+        return {
+            **step,
+            "detail": step.get("detail") or detail,
+            "actionKind": "bills",
+            "actions": [
+                {
+                    "label": _LANE_OPEN_LABELS["bills"],
+                    "href": "/steward/view/bills",
+                    "tone": "secondary",
+                }
+            ],
+        }
+
+    lane = _ONE_NEXT_KIND_TO_LANE.get(kind)
+    if lane is None:
+        return step
+
+    payload = run_steward_records(lane)
+    records = list(payload.get("records") or [])
+    record = _pick_one_next_record(kind, step, records)
+    if record is None:
+        fallback_actions = [
+            {
+                "label": _LANE_OPEN_LABELS.get(lane, f"Open {lane.replace('_', ' ')}"),
+                "href": f"/steward/view/{lane}",
+                "tone": "secondary",
+            }
+        ]
+        return {
+            **step,
+            "actionKind": lane,
+            "actions": fallback_actions,
+        }
+
+    detail = step.get("detail") or _record_detail(record)
+    context = step.get("context") or _record_context(lane, record)
+    return {
+        **step,
+        "ref": record.get("ref"),
+        "detail": detail,
+        "context": context,
+        "actionKind": lane,
+        "actions": _one_next_actions_for_record(lane, record),
+    }
+
+
+def _pick_one_next_record(kind: str, one_next_step: dict, records: list[dict]) -> dict | None:
+    if not records:
+        return None
+
+    if kind == "approval":
+        approval_ref = str(one_next_step.get("approvalRef") or "").strip()
+        if approval_ref:
+            return next((record for record in records if str(record.get("ref")) == approval_ref), records[0])
+        return records[0]
+
+    if kind == "bill":
+        for state in ("overdue", "due_today", "due_soon", "upcoming", "paid"):
+            match = next((record for record in records if str(record.get("state")) == state), None)
+            if match is not None:
+                return match
+        return records[0]
+
+    if kind == "routine":
+        return next((record for record in records if str(record.get("state")) == "due"), records[0])
+
+    if kind == "followup":
+        for state in ("overdue", "today", "soon", "upcoming"):
+            match = next((record for record in records if str(record.get("state")) == state), None)
+            if match is not None:
+                return match
+        return records[0]
+
+    if kind == "important_date":
+        for state in ("today", "soon", "upcoming"):
+            match = next((record for record in records if str(record.get("state")) == state), None)
+            if match is not None:
+                return match
+        return records[0]
+
+    if kind == "room":
+        return next((record for record in records if str(record.get("status")) != "done"), records[0])
+
+    if kind == "task":
+        return next((record for record in records if str(record.get("status")) != "done"), records[0])
+
+    return records[0]
+
+
+def _record_detail(record: dict) -> str | None:
+    for key in ("detail", "continuity", "recoveryPrompt", "amountText", "location", "state"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _record_context(lane: str, record: dict) -> str | None:
+    if lane == "tasks":
+        track = record.get("track")
+        if track:
+            return f"Track: {track}"
+    if lane == "rooms":
+        mode = record.get("mode")
+        if mode:
+            return f"Mode: {mode}"
+    return f"Lane: {lane.replace('_', ' ')}"
+
+
+def _one_next_actions_for_record(lane: str, record: dict) -> list[dict]:
+    record_actions = [dict(action) for action in list(record.get("actions") or [])[:2]]
+
+    if lane == "approvals":
+        actions = [
+            {
+                "label": "Approve",
+                "tone": "primary",
+                "approvalRef": record.get("ref"),
+                "decision": "approve",
+            },
+            {
+                "label": "Deny",
+                "tone": "secondary",
+                "approvalRef": record.get("ref"),
+                "decision": "deny",
+            },
+        ]
+        return [action for action in actions if action.get("approvalRef")]
+
+    lane_link = {
+        "label": _LANE_OPEN_LABELS.get(lane, f"Open {lane.replace('_', ' ')}"),
+        "href": f"/steward/view/{lane}",
+        "tone": "secondary",
+    }
+    return [*record_actions, lane_link]
+
+
 def _decorate_steward_home(home: dict) -> dict:
     continuity = build_continuity_payload(_operator_store_root())
     worker_event = _worker_event_snapshot()
     one_next_step = prioritize_one_next_step(home.get("oneNextStep") or {}, continuity.get("resumeTarget"))
+    one_next_step = _decorate_one_next_step(one_next_step, home.get("currentContext") or {})
     last_worked = _decorate_last_worked(home, continuity, worker_event)
     snapshot = dict(home.get("todaySnapshot", {}))
     snapshot["continuityCount"] = len(continuity.get("records", []))

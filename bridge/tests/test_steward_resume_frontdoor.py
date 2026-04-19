@@ -220,6 +220,36 @@ class TestStewardResumeFrontDoor(unittest.TestCase):
         self.assertIn("Changes requested", html)
         self.assertIn("Tighten the opening.", html)
 
+    def test_frontdoor_renders_one_next_step_record_actions(self):
+        html = render_steward_frontdoor(
+            {
+                "title": "One Next Step",
+                "heartbeat": "Handle this first: Mortgage is overdue.",
+                "oneNextStep": {
+                    "kind": "bill",
+                    "actionKind": "bills",
+                    "ref": "bill:mortgage",
+                    "text": "Handle this first: Mortgage is overdue.",
+                    "detail": "overdue · due 2026-04-01 · $1626.37",
+                    "actions": [
+                        {"action": "mark_paid", "label": "Mark paid"},
+                        {"label": "Open bills", "href": "/steward/view/bills", "tone": "secondary"},
+                    ],
+                },
+                "todaySnapshot": {},
+                "currentContext": {},
+                "lastWorked": {},
+                "continuity": {"records": []},
+            },
+            {"summaries": []},
+        )
+
+        self.assertIn("Mark paid", html)
+        self.assertIn('data-kind="bills"', html)
+        self.assertIn('data-record-action="mark_paid"', html)
+        self.assertIn("Open bills", html)
+        self.assertIn("[data-record-action]", html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -185,6 +185,7 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
           <h1>{escape(home.get("title", "One Next Step"))}</h1>
           <p class="lead">{escape(one_next_step.get("text", "Nothing queued yet."))}</p>
           {_one_next_detail(one_next_step)}
+          {_one_next_actions(one_next_step)}
           <div class="status-pill">{escape(home.get("state", {}).get("label", "steady").replace('-', ' ').title())}</div>
           <form id="ingest-form" class="composer">
             <input id="ingest-text" name="text" placeholder="Add bill mortgage due 1st" value="" />
@@ -297,6 +298,23 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
             decision: button.dataset.decision,
           }});
           status.textContent = payload.result?.status || 'Updated.';
+          window.location.reload();
+        }} catch (error) {{
+          status.textContent = error.message;
+        }}
+      }});
+    }}
+    for (const button of document.querySelectorAll('[data-record-action]')) {{
+      button.addEventListener('click', async () => {{
+        const status = document.getElementById('status');
+        status.textContent = 'Saving...';
+        try {{
+          const payload = await postJson('/steward/action', {{
+            kind: button.dataset.kind,
+            ref: button.dataset.recordRef,
+            action: button.dataset.recordAction,
+          }});
+          status.textContent = payload.result?.detail || payload.result?.status || 'Updated.';
           window.location.reload();
         }} catch (error) {{
           status.textContent = error.message;
@@ -437,6 +455,15 @@ def _one_next_detail(one_next_step: dict) -> str:
     if not detail:
         return ''
     return f'<p class="one-next-detail muted">{escape(str(detail))}</p>'
+
+
+def _one_next_actions(one_next_step: dict) -> str:
+    actions = one_next_step.get('actions') or []
+    if not actions:
+        return ''
+    action_kind = str(one_next_step.get('actionKind') or one_next_step.get('kind') or '')
+    record_ref = str(one_next_step.get('ref') or one_next_step.get('approvalRef') or '')
+    return _record_actions(action_kind, record_ref, actions)
 
 
 def _resume_panel(resume_target: dict) -> str:
@@ -757,6 +784,14 @@ def _record_actions(kind: str, record_ref: str, actions: list[dict]) -> str:
             continue
         if post_url:
             buttons.append(f'<button class="{tone}" data-post-url="{escape(str(post_url))}">{label}</button>')
+            continue
+        approval_ref = action.get('approvalRef')
+        decision = action.get('decision')
+        if approval_ref and decision:
+            buttons.append(
+                f'<button class="{tone}" data-approval-ref="{escape(str(approval_ref))}" '
+                f'data-decision="{escape(str(decision))}">{label}</button>'
+            )
             continue
         if record_ref and record_action:
             buttons.append(
