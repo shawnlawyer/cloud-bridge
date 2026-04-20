@@ -920,9 +920,14 @@ def _lane_record_item(kind: str, item: dict) -> str:
     action_buttons = _record_actions(kind, ref, actions)
     badge = _state_chip_label(item)
     meta = _lane_record_meta(item)
+    badge_html = (
+        f'<span class="status-pill" style="margin: 0 0 10px;">{escape(badge)}</span>'
+        if badge
+        else ''
+    )
     return (
         '<li>'
-        f'{f"<span class=\"status-pill\" style=\"margin: 0 0 10px;\">{escape(badge)}</span>" if badge else ""}'
+        f'{badge_html}'
         f'<strong>{escape(str(title))}</strong><br><span class="muted">{escape(str(detail))}</span>'
         f'{meta}'
         f'{action_buttons}'
