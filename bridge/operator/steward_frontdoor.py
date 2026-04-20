@@ -29,7 +29,15 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     continuity = (home.get("continuity") or {}).get("records", [])
     approval_summaries = (approvals or {}).get("summaries", [])
     lane_cards = "".join(
-        f'''<a class="lane-card" href="/steward/view/{escape(kind)}"><strong>{escape(label)}</strong><span>See what is waiting</span></a>'''
+        _lane_card(
+            kind,
+            label,
+            snapshot=snapshot,
+            current_context=current_context,
+            continuity=continuity,
+            resume_target=resume_target,
+            approval_summaries=approval_summaries,
+        )
         for kind, label in LANES
     )
     approval_items = "".join(_approval_item(item) for item in approval_summaries) or '<li class="empty">No pending approvals.</li>'
@@ -154,9 +162,28 @@ def render_steward_frontdoor(home: dict, approvals: dict | None = None) -> str:
     .stat strong {{ display: block; font-size: 1.55rem; margin-top: 6px; }}
     .strip-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
     .strip-item {{ background: rgba(7, 17, 24, 0.58); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 18px; padding: 14px; }}
-    .lane-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 18px; }}
-    .lane-card {{ display: flex; flex-direction: column; gap: 6px; background: rgba(7, 17, 24, 0.58); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 18px; padding: 14px; }}
+    .lane-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 18px; }}
+    .lane-card {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 132px;
+      background: rgba(7, 17, 24, 0.58);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 18px;
+      padding: 14px;
+      transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+    }}
+    .lane-card:hover {{ transform: translateY(-1px); }}
+    .lane-card strong {{ font-size: 1.04rem; }}
     .lane-card span {{ color: var(--muted); }}
+    .lane-card .lane-label {{ color: #edf5f2; font-size: 0.96rem; }}
+    .lane-card .lane-kicker {{ color: #f7e5bf; font-size: 1.05rem; }}
+    .lane-card .lane-note {{ line-height: 1.35; }}
+    .lane-card.hot {{ border-color: rgba(236, 143, 69, 0.45); background: rgba(47, 22, 13, 0.42); }}
+    .lane-card.warm {{ border-color: rgba(232, 185, 109, 0.36); background: rgba(44, 31, 13, 0.38); }}
+    .lane-card.cool {{ border-color: rgba(121, 191, 178, 0.26); }}
+    .lane-card.quiet {{ border-color: rgba(255, 255, 255, 0.06); }}
     .context-list, .approval-list, .continuity-list {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }}
     .approval-item {{ background: rgba(7, 17, 24, 0.58); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 18px; padding: 14px; }}
     .approval-actions {{ display: flex; gap: 8px; margin-top: 10px; }}
@@ -390,6 +417,7 @@ def render_steward_lane(title: str, payload: dict) -> str:
     <section class="panel">
       <h1>{escape(title)}</h1>
       <p class="muted">Default lane for the UI.</p>
+      {_lane_summary(kind, records)}
       <ul>{rows}</ul>
     </section>
     <section class="panel">
@@ -398,8 +426,10 @@ def render_steward_lane(title: str, payload: dict) -> str:
       <pre id="status" class="muted"></pre>
     </section>
     <section class="panel">
-      <h2>Structured Records</h2>
-      <pre>{escape(json.dumps(records, indent=2))}</pre>
+      <details>
+        <summary>Structured Records JSON</summary>
+        <pre>{escape(json.dumps(records, indent=2))}</pre>
+      </details>
     </section>
   </div>
   <script>
@@ -463,7 +493,7 @@ def _one_next_actions(one_next_step: dict) -> str:
         return ''
     action_kind = str(one_next_step.get('actionKind') or one_next_step.get('kind') or '')
     record_ref = str(one_next_step.get('ref') or one_next_step.get('approvalRef') or '')
-    return _record_actions(action_kind, record_ref, actions)
+    return _record_actions(action_kind, record_ref, actions, extra_class=' hero-actions')
 
 
 def _resume_panel(resume_target: dict) -> str:
@@ -629,8 +659,12 @@ def _continuity_item(item: dict) -> str:
     detail = escape(str(item.get("detail", "Project continuity available.")))
     next_action = item.get("nextAction") or {}
     why_now = item.get("whyNow")
+    state_label = _state_chip_label(item)
     actions = _record_actions("continuity", "", item.get("actions", []))
-    copy = [f'<strong>{title}</strong>', f'<br><span class="muted">{detail}</span>']
+    copy = [f'<strong>{title}</strong>']
+    if state_label:
+        copy.append(f' <span class="status-pill" style="margin-top: 0;">{escape(state_label)}</span>')
+    copy.append(f'<br><span class="muted">{detail}</span>')
     if next_action.get('text'):
         copy.append(f'<br><span class="muted">Next: {escape(str(next_action["text"]))}</span>')
     elif why_now:
@@ -739,6 +773,129 @@ def _last_worked_item(label: str, item: dict | None) -> str:
     )
 
 
+def _lane_card(
+    kind: str,
+    label: str,
+    *,
+    snapshot: dict,
+    current_context: dict,
+    continuity: list[dict],
+    resume_target: dict,
+    approval_summaries: list[dict],
+) -> str:
+    kicker, note, tone = _lane_card_copy(
+        kind,
+        snapshot=snapshot,
+        current_context=current_context,
+        continuity=continuity,
+        resume_target=resume_target,
+        approval_summaries=approval_summaries,
+    )
+    return (
+        f'<a class="lane-card {escape(tone)}" href="/steward/view/{escape(kind)}">'
+        f'<span class="lane-label">{escape(label)}</span>'
+        f'<strong class="lane-kicker">{escape(kicker)}</strong>'
+        f'<span class="lane-note">{escape(note)}</span>'
+        '</a>'
+    )
+
+
+def _lane_card_copy(
+    kind: str,
+    *,
+    snapshot: dict,
+    current_context: dict,
+    continuity: list[dict],
+    resume_target: dict,
+    approval_summaries: list[dict],
+) -> tuple[str, str, str]:
+    overdue_bills = int(snapshot.get('overdueBillCount', 0) or 0)
+    due_soon_bills = int(snapshot.get('dueSoonBillCount', 0) or 0)
+    due_followups = int(snapshot.get('dueFollowupCount', 0) or 0)
+    due_routines = int(snapshot.get('dueRoutineCount', 0) or 0)
+    upcoming_dates = int(snapshot.get('upcomingDateCount', 0) or 0)
+    active_tasks = int(snapshot.get('activeTaskCount', 0) or 0)
+    active_rooms = int(snapshot.get('activeRoomCount', 0) or 0)
+    notification_count = int(snapshot.get('notificationCount', 0) or 0)
+    pending_approvals = int(snapshot.get('pendingApprovalCount', len(approval_summaries)) or 0)
+
+    if kind == 'bills':
+        if overdue_bills:
+            return _plural_line(overdue_bills, 'overdue now', 'Bill pressure needs attention.'), 'Open bills and clear the oldest pressure first.', 'hot'
+        if due_soon_bills:
+            return _plural_line(due_soon_bills, 'due soon', 'Bills are coming up.'), 'Open bills and line up the next due date.', 'warm'
+        return 'All clear', 'No active bill pressure right now.', 'quiet'
+    if kind == 'followups':
+        if due_followups:
+            return _plural_line(due_followups, 'due now', 'Follow-ups are waiting.'), 'Open follow-ups and close the next conversation loop.', 'warm'
+        return 'Nothing due', 'No follow-ups need attention right now.', 'quiet'
+    if kind == 'routines':
+        if due_routines:
+            return _plural_line(due_routines, 'due now', 'Routines need a pass.'), 'Open routines and mark the next recurring thing done.', 'warm'
+        return 'On rhythm', 'No routines are due right now.', 'quiet'
+    if kind == 'important_dates':
+        if upcoming_dates:
+            return _plural_line(upcoming_dates, 'coming up', 'Dates are getting close.'), 'Open dates and prepare the next deadline.', 'warm'
+        return 'No nearby dates', 'Nothing important is crowding the calendar.', 'quiet'
+    if kind == 'tasks':
+        active_task = (current_context or {}).get('activeTask') or {}
+        if active_tasks:
+            return _plural_line(active_tasks, 'active', 'Task continuity is already live.'), f"Active: {active_task.get('label', 'Current task')}", 'cool'
+        return 'No active task', 'Open tasks and pick the next concrete step.', 'quiet'
+    if kind == 'rooms':
+        active_room = (current_context or {}).get('activeRoom') or {}
+        if active_rooms:
+            room_name = active_room.get('roomName', 'Room')
+            return _plural_line(active_rooms, 'in motion', 'Room recovery is underway.'), f"Active: {room_name}", 'cool'
+        return 'No room pass', 'Open rooms when you need a reset sequence.', 'quiet'
+    if kind == 'tools':
+        return 'Last seen lookup', 'Find where a tool was last noted without hunting around.', 'quiet'
+    if kind == 'continuity':
+        if resume_target:
+            title = str(resume_target.get('title') or 'Resume target')
+            return 'Resume ready', f'Next: {title}', 'cool'
+        if continuity:
+            return _plural_line(len(continuity), 'threads tracked', 'Saved work is waiting.'), 'Open continuity and resume the clearest thread.', 'cool'
+        return 'Quiet', 'No saved continuity is waiting right now.', 'quiet'
+    if kind == 'notification_events':
+        if notification_count:
+            return _plural_line(notification_count, 'waiting', 'Recent nudges are queued.'), 'Open notifications and clear what no longer matters.', 'warm'
+        return 'Quiet', 'No notification backlog right now.', 'quiet'
+    if kind == 'approvals':
+        if pending_approvals:
+            return _plural_line(pending_approvals, 'pending', 'Decisions are waiting.'), 'Open approvals and clear the oldest decision first.', 'hot'
+        return 'Nothing pending', 'No approvals are waiting right now.', 'quiet'
+    return 'Open lane', 'See what is waiting in this lane.', 'quiet'
+
+
+def _plural_line(count: int, suffix: str, fallback: str) -> str:
+    if count <= 0:
+        return fallback
+    noun = suffix if count == 1 else suffix
+    return f'{count} {noun}'
+
+
+def _lane_summary(kind: str, records: list[dict]) -> str:
+    total = len(records)
+    actionable = sum(1 for record in records if record.get('actions'))
+    state_counts: dict[str, int] = {}
+    for record in records:
+        label = _state_chip_label(record)
+        if label:
+            state_counts[label] = state_counts.get(label, 0) + 1
+    chips = [
+        f'<span class="chip"><strong>{total}</strong> record{"s" if total != 1 else ""}</span>',
+        f'<span class="chip"><strong>{actionable}</strong> actionable</span>',
+    ]
+    for label, count in list(sorted(state_counts.items(), key=lambda item: (-item[1], item[0])))[:3]:
+        chips.append(f'<span class="chip"><strong>{count}</strong> {escape(label.lower())}</span>')
+    return (
+        '<div class="chips" style="margin: 12px 0 16px;">'
+        + ''.join(chips)
+        + '</div>'
+    )
+
+
 def _lane_record_item(kind: str, item: dict) -> str:
     title = (
         item.get('title')
@@ -761,15 +918,48 @@ def _lane_record_item(kind: str, item: dict) -> str:
     ref = str(item.get('ref') or item.get('approvalRef') or item.get('notificationRef') or '')
     actions = item.get('actions', [])
     action_buttons = _record_actions(kind, ref, actions)
+    badge = _state_chip_label(item)
+    meta = _lane_record_meta(item)
     return (
         '<li>'
+        f'{f"<span class=\"status-pill\" style=\"margin: 0 0 10px;\">{escape(badge)}</span>" if badge else ""}'
         f'<strong>{escape(str(title))}</strong><br><span class="muted">{escape(str(detail))}</span>'
+        f'{meta}'
         f'{action_buttons}'
         '</li>'
     )
 
 
-def _record_actions(kind: str, record_ref: str, actions: list[dict]) -> str:
+def _lane_record_meta(item: dict) -> str:
+    fields: list[str] = []
+    if item.get('dueDate'):
+        fields.append(f'Due {item["dueDate"]}')
+    if item.get('onDate'):
+        fields.append(f'Date {item["onDate"]}')
+    if item.get('track'):
+        fields.append(f'Track {item["track"]}')
+    if item.get('mode'):
+        fields.append(f'Mode {item["mode"]}')
+    if item.get('currentPass'):
+        fields.append(f'Pass {item["currentPass"]}')
+    if item.get('amountText'):
+        fields.append(f'Amount {item["amountText"]}')
+    if item.get('location'):
+        fields.append(f'Location {item["location"]}')
+    if not fields:
+        return ''
+    chips = ''.join(f'<span class="chip">{escape(field)}</span>' for field in fields[:4])
+    return f'<div class="chips" style="margin-top: 10px;">{chips}</div>'
+
+
+def _state_chip_label(item: dict) -> str | None:
+    value = item.get('state') or item.get('status')
+    if not value:
+        return None
+    return str(value).replace('_', ' ').replace('-', ' ').title()
+
+
+def _record_actions(kind: str, record_ref: str, actions: list[dict], extra_class: str = '') -> str:
     if not actions:
         return ''
     buttons = []
@@ -798,7 +988,7 @@ def _record_actions(kind: str, record_ref: str, actions: list[dict]) -> str:
                 f'<button class="{tone}" data-kind="{escape(kind)}" '
                 f'data-record-ref="{escape(record_ref)}" data-record-action="{escape(str(record_action))}">{label}</button>'
             )
-    return f'<div class="record-actions">{"".join(buttons)}</div>'
+    return f'<div class="record-actions{extra_class}">{"".join(buttons)}</div>'
 
 
 def _script_json(value: object) -> str:

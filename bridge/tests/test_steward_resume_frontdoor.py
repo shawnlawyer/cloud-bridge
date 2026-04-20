@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from bridge.operator import render_steward_frontdoor
+from bridge.operator import render_steward_frontdoor, render_steward_lane
 from bridge.operator.steward_priorities import prioritize_one_next_step
 from bridge.steward_continuity import build_continuity_payload
 from bridge.workflows.research_writing import bootstrap_research_writing
@@ -249,6 +249,70 @@ class TestStewardResumeFrontDoor(unittest.TestCase):
         self.assertIn('data-record-action="mark_paid"', html)
         self.assertIn("Open bills", html)
         self.assertIn("[data-record-action]", html)
+
+    def test_frontdoor_renders_lane_cards_with_status_copy(self):
+        html = render_steward_frontdoor(
+            {
+                "title": "One Next Step",
+                "heartbeat": "HEARTBEAT_OK",
+                "oneNextStep": {"kind": "task", "text": "Continue with: clear counter."},
+                "todaySnapshot": {
+                    "pendingApprovalCount": 1,
+                    "overdueBillCount": 1,
+                    "dueFollowupCount": 2,
+                    "dueRoutineCount": 1,
+                    "upcomingDateCount": 1,
+                    "activeTaskCount": 1,
+                    "activeRoomCount": 1,
+                    "continuityCount": 2,
+                    "notificationCount": 3,
+                },
+                "currentContext": {
+                    "activeTask": {"label": "Kitchen reset", "track": "home"},
+                    "activeRoom": {"roomName": "Kitchen", "mode": "standard"},
+                },
+                "resumeTarget": {"title": "Alpha Project"},
+                "lastWorked": {},
+                "continuity": {"records": [{}, {}]},
+            },
+            {"summaries": [{"ref": "approval:demo", "title": "Review budget hold"}]},
+        )
+
+        self.assertIn("1 overdue now", html)
+        self.assertIn("2 due now", html)
+        self.assertIn("Active: Kitchen reset", html)
+        self.assertIn("Active: Kitchen", html)
+        self.assertIn("Next: Alpha Project", html)
+        self.assertIn("3 waiting", html)
+        self.assertIn("1 pending", html)
+
+    def test_lane_view_collapses_json_and_shows_summary_chips(self):
+        html = render_steward_lane(
+            "Bills",
+            {
+                "kind": "bills",
+                "summaries": [
+                    {"title": "Mortgage", "detail": "overdue · due 2026-04-01", "ref": "bill:mortgage"}
+                ],
+                "records": [
+                    {
+                        "ref": "bill:mortgage",
+                        "name": "Mortgage",
+                        "state": "overdue",
+                        "dueDate": "2026-04-01",
+                        "amountText": "$1626.37",
+                        "actions": [{"action": "mark_paid", "label": "Mark paid"}],
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("actionable", html)
+        self.assertIn(">Overdue<", html)
+        self.assertIn("Due 2026-04-01", html)
+        self.assertIn("Amount $1626.37", html)
+        self.assertIn("<details>", html)
+        self.assertIn("Structured Records JSON", html)
 
 
 if __name__ == "__main__":
